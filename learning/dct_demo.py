@@ -4,7 +4,6 @@ from scipy.fft import dct,dctn,idctn
 
 np.set_printoptions(precision=1, suppress=True, linewidth=150)
 
-# Part 1: tiny 1D demo
 print("PART 1: one row of 8 pixels\n")
 rows = {
     "flat       ": np.full(8, 100.0),
@@ -14,8 +13,7 @@ rows = {
 for name, row in rows.items():
     print(name, row)
     print("  coefficients:", dct(row, norm="ortho"), "\n")
-
-# Part 2: one real 8x8 block
+    
 print("PART 2: a real 8x8 block\n")
 gray = cv2.cvtColor(cv2.imread("data/forged.jpg"), cv2.COLOR_BGR2GRAY)
 block = gray[50:58, 50:58].astype(np.float32)

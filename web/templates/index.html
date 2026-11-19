@@ -3,133 +3,105 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="color-scheme" content="dark">
-  <title>ForgeryDetect — Copy-Move Forgery Detection</title>
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Upload a photo and locate regions that were copied and pasted inside the same image.">
+  <title>ForgeryDetect</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/lenis.css">
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔍</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23171614'/><rect x='7' y='8' width='8' height='7' rx='1.5' fill='none' stroke='%23f6f4ef' stroke-width='1.6'/><rect x='17' y='17' width='8' height='7' rx='1.5' fill='none' stroke='%23c4a574' stroke-width='1.6'/></svg>">
 </head>
 <body>
   <nav class="navbar">
     <div class="wrap nav-inner">
       <a href="/" class="logo">
-        <span class="logo-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
-        <span>Forgery<strong>Detect</strong></span>
+        <svg class="mark" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect width="11" height="11" rx="2" fill="#171614"/><rect x="7" y="7" width="11" height="11" rx="2" fill="#8a6432"/></svg>
+        ForgeryDetect
       </a>
       <div class="nav-links">
-        <a href="#" class="nav-link active">Home</a>
-        <a href="#main" class="nav-link">Analysis</a>
-        <a href="#features" class="nav-link">About</a>
+        <a href="#main" class="nav-link">Analyze</a>
+        <a href="#method" class="nav-link">Method</a>
       </div>
-      <a href="https://github.com" target="_blank" rel="noopener" class="btn btn-outline btn-sm nav-gh" aria-label="GitHub">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.8-.26.8-.58v-2.23c-3.34.73-4.03-1.42-4.03-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.19.7.8.58A12 12 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-        <span>GitHub</span>
-      </a>
     </div>
   </nav>
 
   <header class="wrap hero">
-    <div class="hero-inner">
-      <div class="hero-text">
-        <span class="badge badge-red">Copy-move forgery detection</span>
-        <h1>Find the regions an image copied from itself</h1>
-        <p class="hero-sub">Upload an image and ForgeryDetect compares DCT features of every block to locate duplicated areas and the shift between them.</p>
-        <div class="hero-actions">
-          <a href="#main" class="btn btn-red btn-lg">Analyze an image</a>
-          <a href="#features" class="btn btn-outline btn-lg">How it works</a>
-        </div>
-      </div>
-      <div class="hero-visual">
-        <div class="hero-card" aria-hidden="true">
-          <svg viewBox="0 0 320 200" preserveAspectRatio="xMidYMid meet">
-            <rect x="40" y="50" width="70" height="55" rx="4" fill="rgba(240,82,79,.14)" stroke="#f0524f" stroke-width="1.5"/>
-            <rect x="200" y="115" width="70" height="55" rx="4" fill="rgba(240,82,79,.14)" stroke="#f0524f" stroke-width="1.5"/>
-            <path d="M110 78 C160 78 150 142 200 142" fill="none" stroke="#f0524f" stroke-width="1.5" stroke-dasharray="4 4"/>
-            <circle cx="110" cy="78" r="3" fill="#f0524f"/><circle cx="200" cy="142" r="3" fill="#f0524f"/>
-            <text x="46" y="44" fill="#8f98a8" font-size="9" font-family="Instrument Sans,sans-serif">source</text>
-            <text x="206" y="184" fill="#8f98a8" font-size="9" font-family="Instrument Sans,sans-serif">copy</text>
-          </svg>
-          <div class="scan-line"></div>
-          <span class="hero-caption">Matching blocks voted into a shift vector</span>
-        </div>
-      </div>
+    <p class="eyebrow">Copy-move detection</p>
+    <h1>See what an image copied from itself.</h1>
+    <p class="lede">Upload a photo. Matching blocks are compared in the frequency domain, then grouped into the regions that were duplicated.</p>
+    <div class="hero-actions">
+      <a href="#main" class="btn btn-red">Analyze an image</a>
+      <a href="#method" class="btn btn-outline">How it works</a>
     </div>
   </header>
 
   <main class="wrap main" id="main">
     <div class="main-grid">
-      <section class="panel upload-panel" aria-labelledby="uploadTitle">
+      <section class="panel" aria-labelledby="uploadTitle">
         <div class="panel-header">
-          <div class="panel-icon red"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
           <div>
-            <h2 id="uploadTitle">Upload image</h2>
-            <p class="text-muted">Grayscale or color. Analysis runs on the server.</p>
+            <h2 id="uploadTitle">Image</h2>
+            <p class="text-muted">Color or grayscale. Processing stays on the server.</p>
           </div>
         </div>
 
         <div class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="Choose an image to analyze">
           <input type="file" id="fileInput" accept="image/*" hidden>
           <div class="drop-content" id="dropContent">
-            <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="upload-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <p><strong>Drop an image here</strong></p>
-            <p class="text-muted">or click to browse</p>
-            <div class="format-tags"><span class="tag">JPG</span><span class="tag">PNG</span><span class="tag">BMP</span><span class="tag">TIFF</span></div>
+            <p class="drop-title">Drop an image, or click to browse</p>
+            <p class="text-muted">JPG, PNG, BMP, TIFF</p>
           </div>
           <div class="drop-preview" id="dropPreview" style="display:none">
             <img id="previewImg" alt="Selected image preview">
-            <button type="button" class="btn-clear" id="clearBtn" title="Remove image" aria-label="Remove image">✕</button>
+            <button type="button" class="btn-clear" id="clearBtn" title="Remove image" aria-label="Remove image">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
           </div>
         </div>
 
         <div class="comofod-bar">
-          <label class="text-muted" for="comofodCategory">Sample set</label>
-          <select id="comofodCategory" aria-label="CoMoFoD category">
-            <option value="translation">Translation (001–040)</option>
-            <option value="rotation">Rotation (041–080)</option>
-            <option value="scaling">Scaling (081–120)</option>
-            <option value="distortion">Distortion (121–160)</option>
-            <option value="combination">Combination (161–200)</option>
+          <label for="comofodCategory">Examples</label>
+          <select id="comofodCategory" aria-label="Example category">
+            <option value="translation">Translation</option>
+            <option value="rotation">Rotation</option>
+            <option value="scaling">Scaling</option>
+            <option value="distortion">Distortion</option>
+            <option value="combination">Combination</option>
           </select>
-          <select id="comofodSelect" aria-label="CoMoFoD image"><option value="">Select image</option></select>
+          <select id="comofodSelect" aria-label="Example image"><option value="">Select image</option></select>
           <button type="button" class="btn btn-sm btn-outline" id="loadComofod">Load</button>
         </div>
 
         <details class="advanced" id="advancedOpts">
-          <summary><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="9" cy="6" r="2" fill="var(--bg)"/><circle cx="15" cy="12" r="2" fill="var(--bg)"/><circle cx="8" cy="18" r="2" fill="var(--bg)"/></svg> Detection settings</summary>
+          <summary>Detection settings</summary>
           <div class="params-grid">
-            <div class="param"><label for="paramQ">Q <span class="text-muted">(quantize)</span></label><input type="number" id="paramQ" value="8" min="1" max="64"></div>
-            <div class="param"><label for="paramMinStd">min_std <span class="text-muted">(flat filter)</span></label><input type="number" id="paramMinStd" value="4.0" step="0.5" min="0" max="50"></div>
-            <div class="param"><label for="paramK">K <span class="text-muted">(features)</span></label><input type="number" id="paramK" value="6" min="1" max="64"></div>
-            <div class="param"><label for="paramMinVotes">min_votes</label><input type="number" id="paramMinVotes" value="150" min="1" max="1000"></div>
-            <div class="param"><label for="paramMinDist">min_dist</label><input type="number" id="paramMinDist" value="30" min="5" max="200"></div>
-            <div class="param"><label for="paramWindow">window</label><input type="number" id="paramWindow" value="5" min="1" max="20"></div>
-            <div class="param"><label for="paramKernel">kernel</label><input type="number" id="paramKernel" value="9" min="3" max="21"></div>
-            <div class="param"><label for="paramMinSize">min_size</label><input type="number" id="paramMinSize" value="500" min="50" max="5000"></div>
+            <div class="param"><label for="paramQ">Quantize</label><input type="number" id="paramQ" value="8" min="1" max="64"></div>
+            <div class="param"><label for="paramMinStd">Flat filter</label><input type="number" id="paramMinStd" value="4.0" step="0.5" min="0" max="50"></div>
+            <div class="param"><label for="paramK">Features</label><input type="number" id="paramK" value="6" min="1" max="64"></div>
+            <div class="param"><label for="paramMinVotes">Min votes</label><input type="number" id="paramMinVotes" value="150" min="1" max="1000"></div>
+            <div class="param"><label for="paramMinDist">Min distance</label><input type="number" id="paramMinDist" value="30" min="5" max="200"></div>
+            <div class="param"><label for="paramWindow">Window</label><input type="number" id="paramWindow" value="5" min="1" max="20"></div>
+            <div class="param"><label for="paramKernel">Kernel</label><input type="number" id="paramKernel" value="9" min="3" max="21"></div>
+            <div class="param"><label for="paramMinSize">Min size</label><input type="number" id="paramMinSize" value="500" min="50" max="5000"></div>
           </div>
         </details>
 
-        <button type="button" class="btn btn-red btn-lg btn-full" id="analyzeBtn" disabled>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21"/></svg>
-          Analyze image
-        </button>
+        <button type="button" class="btn btn-red btn-full" id="analyzeBtn" disabled>Analyze image</button>
       </section>
 
       <section class="panel results-panel" aria-labelledby="resultsTitle" aria-live="polite">
         <div class="panel-header">
-          <div class="panel-icon blue"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
           <div>
-            <h2 id="resultsTitle">Results</h2>
-            <p class="text-muted">Detected regions and matching shifts.</p>
+            <h2 id="resultsTitle">Result</h2>
+            <p class="text-muted">Regions and the shift between them.</p>
           </div>
-          <span class="badge badge-green" id="statusBadge">● Ready</span>
+          <span class="badge badge-green" id="statusBadge">Ready</span>
         </div>
 
         <div class="results-placeholder" id="resultsPlaceholder">
-          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--line-2)" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-          <p class="text-muted">Add an image and select Analyze to see results here.</p>
+          <p>The overlay, mask, and measurements appear here after analysis.</p>
         </div>
 
         <div class="results-content" id="resultsContent" style="display:none">
@@ -142,62 +114,67 @@
           <div class="stats-grid">
             <div class="stat-card"><div class="stat-value" id="statFlagged">—</div><div class="stat-label">Flagged pixels</div></div>
             <div class="stat-card"><div class="stat-value" id="statPct">—</div><div class="stat-label">Of image</div></div>
-            <div class="stat-card"><div class="stat-value" id="statTime">—</div><div class="stat-label">Detection time</div></div>
-            <div class="stat-card"><div class="stat-value" id="statRegions">—</div><div class="stat-label">Regions found</div></div>
+            <div class="stat-card"><div class="stat-value" id="statTime">—</div><div class="stat-label">Time</div></div>
+            <div class="stat-card"><div class="stat-value" id="statRegions">—</div><div class="stat-label">Regions</div></div>
           </div>
           <div class="shifts-section" id="shiftsSection" style="display:none">
-            <h3>Dominant shift vectors</h3>
+            <h3>Shift vectors</h3>
             <table class="shifts-table">
               <thead><tr><th>Δy</th><th>Δx</th><th>Votes</th></tr></thead>
               <tbody id="shiftsBody"></tbody>
             </table>
           </div>
           <div class="result-actions">
-            <button type="button" class="btn btn-outline btn-sm" id="downloadMask">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download mask
-            </button>
+            <button type="button" class="btn btn-outline btn-sm" id="downloadMask">Download mask</button>
           </div>
         </div>
 
         <div class="loading-overlay" id="loadingOverlay" style="display:none">
           <div class="spinner"></div>
-          <p>Analyzing image…</p>
+          <p>Analyzing</p>
         </div>
       </section>
     </div>
   </main>
 
-  <section class="wrap features" id="features">
-    <div class="features-grid">
-      <div class="feature-card">
-        <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></div>
-        <h3>DCT feature extraction</h3>
-        <p>Frequency analysis of 8×8 blocks.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-        <h3>Zigzag scanning</h3>
-        <p>Keeps the low-frequency coefficients that matter.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
-        <h3>Shift voting</h3>
-        <p>Finds the shift vectors that many block pairs agree on.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
-        <h3>Morphological cleanup</h3>
-        <p>Removes noise so subtle forgeries stand out.</p>
-      </div>
-    </div>
+  <section class="wrap method" id="method">
+    <h2>Method</h2>
+    <ol class="method-list">
+      <li>
+        <span>01</span>
+        <div>
+          <h3>Frequency features</h3>
+          <p>Each 8×8 block is described by a short DCT signature.</p>
+        </div>
+      </li>
+      <li>
+        <span>02</span>
+        <div>
+          <h3>Block matching</h3>
+          <p>Similar signatures are paired, ignoring flat areas that would match by chance.</p>
+        </div>
+      </li>
+      <li>
+        <span>03</span>
+        <div>
+          <h3>Shift voting</h3>
+          <p>Pairs that share the same displacement are kept as a copied region.</p>
+        </div>
+      </li>
+      <li>
+        <span>04</span>
+        <div>
+          <h3>Cleanup</h3>
+          <p>Small isolated marks are removed so the remaining mask is the duplicated area.</p>
+        </div>
+      </li>
+    </ol>
   </section>
 
   <footer class="footer">
-    <div class="wrap footer-left">
-      <span class="logo-icon small"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
-      <span>Forgery<strong style="color:var(--red)">Detect</strong></span>
-      <span class="text-muted">© 2025 Copy-Move Forgery Detection. Built for DIP Lab.</span>
+    <div class="wrap footer-inner">
+      <span class="logo">ForgeryDetect</span>
+      <span class="text-muted">Copy-move forgery detection</span>
     </div>
   </footer>
 
@@ -205,7 +182,6 @@
   <script src="/static/lenis.min.js"></script>
   <script src="/static/app.js"></script>
   <script>
-    // UI enhancements (app.js stays unchanged)
     (function () {
       const toasts = document.getElementById('toasts');
       window.alert = function (msg) {
@@ -222,7 +198,8 @@
       ).observe(prev, { attributes: true, attributeFilter: ['style'] });
       zone.addEventListener('keydown', e => {
         if ((e.key === 'Enter' || e.key === ' ') && e.target === zone) {
-          e.preventDefault(); zone.click();
+          e.preventDefault();
+          zone.click();
         }
       });
     })();
