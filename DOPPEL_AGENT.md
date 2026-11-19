@@ -9,6 +9,15 @@ Environment: Ubuntu (Linux), Python 3.11+, `uv`. ABD has NO local GPU. Everythin
 
 Read this whole file before doing anything. Re-read the "Rules" and "Current step" sections at the start of every session.
 
+The agentlogs/ folder is the project's living documentation. Updating it is part of every task. A task is NOT finished until the logs are updated. Before starting any task, read these files first so you know the current state.
+Files
+agentlogs/architecture.md: architecture and data flow
+agentlogs/files.md: summary of every file
+agentlogs/changelog.md: running history of changes
+When to update
+After ANY change that creates, deletes, renames, or meaningfully edits a file, or changes how data moves. Do it in the same task, before telling the user you are done. Do not batch updates for later.
+
+
 ---
 
 ## 1. What we are building
