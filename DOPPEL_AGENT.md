@@ -79,7 +79,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 2, Step 2.1: SIFT keypoint detection.** See section 6.
+**Phase 2, Step 2.6: SIFT flip pass.** See section 6.
 
 (Update this line when a step finishes.)
 

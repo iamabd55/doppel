@@ -41,13 +41,21 @@ Input Image
    │
    ├─► [Branch 1: DCT]  ──► Block DCT ──► Lexsort ──► Shift Voting ──► DCT Mask
    │
-   ├─► [Branch 2: SIFT] ──► Keypoints ──► Descriptors ──► 2NN Match ──► RANSAC Affine ──► SIFT Mask
+   ├─► [Branch 2: SIFT] ──► Keypoints ──► Descriptors ──► 2NN Match ──► RANSAC Affine ──► Hull & Dilate ──► SIFT Mask
    │        └─ (Includes horizontal flip pass for mirrored copies)
    │
    ├─► [Branch 3: CNN]  ──► Backbone Features ──► Self-Correlation ──► Decoder ──► CNN Mask
    │
    └─► Hybrid Fusion ──► Heuristic (Union / Intersection / Vote) or U-Net ──► Final Mask
 ```
+
+### SIFT Branch Details (Phase 2)
+1. Keypoints & Descriptors: `cv2.SIFT_create()` extracts distinctive scale-space extrema and 128-d gradient histograms.
+2. Within-Image Matching: kNN (k=3) against self, discard self-match, Lowe's ratio test (d1 / d2 < ratio_threshold), spatial distance pruning (>= min_dist), symmetric deduplication.
+3. Horizontal Flip Pass: Evaluates mirrored/reflected clones by matching original descriptors against descriptors from `cv2.flip(image, 1)` and re-mapping coordinates via `x_orig = W - 1 - x_flip`.
+4. Geometric Verification: Agglomerative hierarchical clustering groups matched points into distinct spatial regions; 6-parameter RANSAC affine estimation (`cv2.estimateAffine2D`) fits a transformation and extracts verified inliers.
+5. Localization: Inliers are painted onto a binary mask using convex hull polygon filling of inlier clusters and circular dilation around keypoint coordinates, followed by morphological closing.
+6. Verification: Binary mask evaluated directly against ground truth masks using `detector/evaluate.py:scores(mask, gt)`.
 
 ## Planned Product Layer (Phase 7)
 
