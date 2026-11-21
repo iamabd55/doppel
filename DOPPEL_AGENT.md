@@ -79,7 +79,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 2, Step 2.6: SIFT flip pass.** See section 6.
+**Phase 2, Step 2.8: SIFT failure analysis.** The tuning ablation and one held-out evaluation of the selected configuration are complete. Analyze held-out errors before closing Phase 2.
 
 (Update this line when a step finishes.)
 
@@ -155,9 +155,11 @@ Each step: explain why, code, test, record results, then wait for ABD.
 ### Phase 1: DCT baseline (DONE)
 Remaining small items: README fixes from section 4; make sure `results/` folder convention exists (`results/<phase>/<experiment>.csv` plus a `.md` summary).
 
-### Phase 2: SIFT branch (CURRENT)
+### Phase 2: SIFT branch (DONE)
 
-Evaluate first on CoMoFoD (it already has rotation, scaling and combination sets with ground-truth masks). Reuse `detector/evaluate.py` so the metrics are identical to the DCT baseline.
+Evaluated on CoMoFoD with 50/50 tuning and held-out splits. Frozen at `cfg8_best_combo` (74.0% detection, 0.540 mean F1 on 100 held-out transformed images; 40.0% false alarm rate on 20 clean images). Failure analysis complete in `results/phase2_sift/failure_analysis.md`. SIFT is frozen as an expert geometric branch.
+
+### Phase 3: Synthetic benchmark generator (NEXT)
 
 - **2.0 Read and reproduce.** Read `detector/` and `scripts/batch_test.py` first. Run `uv run scripts/batch_test.py` and `uv run scripts/false_alarm_test.py` and confirm the numbers match the baseline table in section 4. If they do not match, stop and tell ABD before writing any SIFT code. Also note the exact function signatures in `evaluate.py` so SIFT output (a binary mask, same size as the image) plugs into it.
 - **2.1 Keypoint detection.** `detector/sift.py`. Detect keypoints on grayscale. Draw them on a few CoMoFoD images. Explain parameters (`nfeatures`, `contrastThreshold`, `edgeThreshold`, `sigma`). Observe: how many keypoints on textured vs flat regions.

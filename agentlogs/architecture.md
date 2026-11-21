@@ -52,10 +52,12 @@ Input Image
 ### SIFT Branch Details (Phase 2)
 1. Keypoints & Descriptors: `cv2.SIFT_create()` extracts distinctive scale-space extrema and 128-d gradient histograms.
 2. Within-Image Matching: kNN (k=3) against self, discard self-match, Lowe's ratio test (d1 / d2 < ratio_threshold), spatial distance pruning (>= min_dist), symmetric deduplication.
-3. Horizontal Flip Pass: Evaluates mirrored/reflected clones by matching original descriptors against descriptors from `cv2.flip(image, 1)` and re-mapping coordinates via `x_orig = W - 1 - x_flip`.
-4. Geometric Verification: Agglomerative hierarchical clustering groups matched points into distinct spatial regions; 6-parameter RANSAC affine estimation (`cv2.estimateAffine2D`) fits a transformation and extracts verified inliers.
-5. Localization: Inliers are painted onto a binary mask using convex hull polygon filling of inlier clusters and circular dilation around keypoint coordinates, followed by morphological closing.
-6. Verification: Binary mask evaluated directly against ground truth masks using `detector/evaluate.py:scores(mask, gt)`.
+3. Horizontal Flip Pass: Evaluates mirrored/reflected clones by matching original descriptors against descriptors from `cv2.flip(image, 1)` and re-mapping coordinates via `x_orig = W - 1 - x_flip`. Uses a dedicated `min_inliers_flip` threshold to prevent false alarms on symmetric architecture.
+4. Orientation Consistency Filter: Rejects spurious match pairs whose angle difference `delta = (ang2 - ang1) % 360` lacks consensus support from neighboring matches.
+5. Geometric Verification: Agglomerative hierarchical clustering groups matched points into distinct spatial regions; 6-parameter RANSAC affine estimation (`cv2.estimateAffine2D`) fits a transformation and validates both absolute inlier count (`min_inliers`) and cluster inlier ratio (`min_inlier_ratio`).
+6. Localization: Inliers are painted onto a binary mask using per-cluster spatial convex hulls (preventing cross-image polygon bloat) combined with circular dilation and morphological closing. Conservative dilation-only mode supported via `use_convex_hull=False`.
+7. Calibration & Validation: Systematic 50/50 partition splits evaluation into tuning sets (images 1-20) and held-out test sets (images 21-40) to guard against threshold overfitting.
+8. Status: Frozen as `cfg8_best_combo` (ratio 0.70, inliers 6, inlier ratio 0.25, flip inliers 10, orientation filter on, cluster convex hull). Failure analysis complete in `results/phase2_sift/failure_analysis.md`. SIFT is locked as an expert branch for transformation coverage.
 
 ## Planned Product Layer (Phase 7)
 

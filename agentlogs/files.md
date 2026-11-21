@@ -19,13 +19,14 @@ Summary of files in the Doppel repository:
 ### SIFT Detection Subpackage (`detector/sift/`)
 - `detector/sift/__init__.py`: Package entrypoint re-exporting all SIFT public functions for clean imports.
 - `detector/sift/features.py`: Keypoint detection (`extract_keypoints`), 128-d descriptor extraction (`extract_descriptors`, `detect_and_compute`), and keypoint drawing (`draw_keypoints`).
-- `detector/sift/matching.py`: Within-image kNN matching (`match_within_image`), horizontal flip pass cross-matching (`match_flipped`), coordinate re-mapping (`map_flip_coordinates`), and match line drawing (`draw_matches`).
-- `detector/sift/verification.py`: Hierarchical spatial clustering and RANSAC 6-parameter affine estimation (`verify_matches_ransac`).
-- `detector/sift/localization.py`: Binary mask generation via convex hull and keypoint dilation (`create_sift_mask`), and end-to-end detection pipeline (`detect_sift`).
-- `detector/sift.py`: Facade file re-exporting from `detector.sift` for backward compatibility.
+- `detector/sift/matching.py`: Within-image kNN matching (`match_within_image`), horizontal flip pass cross-matching (`match_flipped`), orientation consistency filtering (`filter_by_orientation`), coordinate re-mapping (`map_flip_coordinates`), and match line drawing (`draw_matches`).
+- `detector/sift/verification.py`: Hierarchical spatial clustering and RANSAC 6-parameter affine estimation (`verify_matches_ransac`) with `min_inlier_ratio` filtering and cluster metadata reporting.
+- `detector/sift/localization.py`: Binary mask generation via per-cluster convex hull and keypoint dilation (`create_sift_mask`), and configurable end-to-end detection pipeline (`detect_sift`).
 
 ## Evaluation and Utility Scripts (`scripts/`)
+- `scripts/ablate_sift.py`: SIFT calibration and ablation study runner evaluating parameter sweeps across the 50/50 tuning split (images 1-20) or held-out test split (images 21-40).
 - `scripts/batch_test.py`: Benchmark evaluation script running the DCT detector on CoMoFoD images 001-040 across categories, evaluating against full mask M and paste-only mask B.
+- `scripts/batch_test_sift.py`: Step 2.7 benchmark runner evaluating SIFT across all 5 CoMoFoD categories (200 forged images) and 40 originals, recording per-image CSV and side-by-side DCT vs SIFT summary.
 - `scripts/false_alarm_test.py`: False alarm evaluation testing untouched original images (001_O through 040_O) to verify zero or low false positive rates.
 - `scripts/experiments.py`: Robustness experimentation script measuring F1 resilience against Gaussian noise, Gaussian blur, and JPEG compression degradation.
 - `scripts/inspect_comofod.py`: Diagnostic utility comparing pixel differences between forged (F), original (O), and ground truth masks (B, M) for CoMoFoD set 001.
@@ -64,3 +65,8 @@ Summary of files in the Doppel repository:
 ## Data and Results Directories (Untracked / Outputs)
 - `data/`: Contains CoMoFoD benchmark images and local synthetic test sets.
 - `results/`: Stores experiment CSV tables, diagnostic plots, and markdown summaries per phase.
+  - `results/phase2_sift/sift_benchmark.csv`: Full benchmark evaluation across all 200 CoMoFoD forged images and 40 originals.
+  - `results/phase2_sift/benchmark_summary.md`: Side-by-side DCT vs initial SIFT benchmark comparison.
+  - `results/phase2_sift/ablation_tuning_split.md` / `.csv`: Systematic 9-configuration calibration sweep on the 50/50 tuning split (120 images).
+  - `results/phase2_sift/ablation_held_out_split.md` / `.csv`: Held-out validation of frozen configuration `cfg8_best_combo` (120 unseen images).
+  - `results/phase2_sift/failure_analysis.md`: Detailed failure analysis and Phase 2 sign-off document.
