@@ -14,6 +14,7 @@ from detector.sift.matching import (
     match_within_image,
     map_flip_coordinates,
     match_flipped,
+    filter_by_orientation,
     draw_matches,
 )
 from detector.sift.verification import (
@@ -32,6 +33,7 @@ __all__ = [
     "match_within_image",
     "map_flip_coordinates",
     "match_flipped",
+    "filter_by_orientation",
     "draw_matches",
     "verify_matches_ransac",
     "create_sift_mask",

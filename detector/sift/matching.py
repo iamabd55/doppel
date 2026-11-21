@@ -13,10 +13,14 @@ def match_within_image(
     descriptors: np.ndarray,
     ratio_threshold: float = 0.6,
     min_dist: float = 30.0,
-) -> Tuple[np.ndarray, np.ndarray, List[float]]:
+    return_angles: bool = False,
+) -> Tuple:
     """Match descriptors within the same image using kNN (k=3) and Lowe's ratio test."""
     empty = np.empty((0, 2), dtype=np.float32)
+    empty_ang = np.empty((0,), dtype=np.float32)
     if descriptors is None or len(descriptors) < 3:
+        if return_angles:
+            return empty, empty, [], empty_ang, empty_ang
         return empty, empty, []
 
     bf = cv2.BFMatcher(cv2.NORM_L2)
@@ -24,6 +28,8 @@ def match_within_image(
 
     pts1_list = []
     pts2_list = []
+    ang1_list = []
+    ang2_list = []
     ratios_list = []
     seen_pairs = set()
 
@@ -56,16 +62,20 @@ def match_within_image(
 
         pts1_list.append(pt1)
         pts2_list.append(pt2)
+        ang1_list.append(keypoints[i].angle)
+        ang2_list.append(keypoints[j].angle)
         ratios_list.append(float(ratio))
 
     if len(pts1_list) == 0:
+        if return_angles:
+            return empty, empty, [], empty_ang, empty_ang
         return empty, empty, []
 
-    return (
-        np.array(pts1_list, dtype=np.float32),
-        np.array(pts2_list, dtype=np.float32),
-        ratios_list,
-    )
+    pts1 = np.array(pts1_list, dtype=np.float32)
+    pts2 = np.array(pts2_list, dtype=np.float32)
+    if return_angles:
+        return pts1, pts2, ratios_list, np.array(ang1_list, dtype=np.float32), np.array(ang2_list, dtype=np.float32)
+    return pts1, pts2, ratios_list
 
 
 def map_flip_coordinates(pts: np.ndarray, width: int) -> np.ndarray:
@@ -86,15 +96,19 @@ def match_flipped(
     width: int,
     ratio_threshold: float = 0.6,
     min_dist: float = 30.0,
-) -> Tuple[np.ndarray, np.ndarray, List[float]]:
+    return_angles: bool = False,
+) -> Tuple:
     """Match original image descriptors against horizontally flipped descriptors."""
     empty = np.empty((0, 2), dtype=np.float32)
+    empty_ang = np.empty((0,), dtype=np.float32)
     if (
         descs_orig is None
         or len(descs_orig) < 2
         or descs_flip is None
         or len(descs_flip) < 2
     ):
+        if return_angles:
+            return empty, empty, [], empty_ang, empty_ang
         return empty, empty, []
 
     bf = cv2.BFMatcher(cv2.NORM_L2)
@@ -102,6 +116,8 @@ def match_flipped(
 
     pts1_list = []
     pts2_list = []
+    ang1_list = []
+    ang2_list = []
     ratios_list = []
 
     for matches in knn_matches:
@@ -128,16 +144,68 @@ def match_flipped(
 
         pts1_list.append(pt_orig)
         pts2_list.append(pt_back)
+        ang1_list.append(kps_orig[m1.queryIdx].angle)
+        # Flip inverts horizontal direction: angle theta becomes (180 - theta) mod 360
+        ang2_list.append((180.0 - kps_flip[m1.trainIdx].angle) % 360.0)
         ratios_list.append(float(ratio))
 
     if len(pts1_list) == 0:
+        if return_angles:
+            return empty, empty, [], empty_ang, empty_ang
         return empty, empty, []
 
-    return (
-        np.array(pts1_list, dtype=np.float32),
-        np.array(pts2_list, dtype=np.float32),
-        ratios_list,
-    )
+    pts1 = np.array(pts1_list, dtype=np.float32)
+    pts2 = np.array(pts2_list, dtype=np.float32)
+    if return_angles:
+        return (
+            pts1,
+            pts2,
+            ratios_list,
+            np.array(ang1_list, dtype=np.float32),
+            np.array(ang2_list, dtype=np.float32),
+        )
+    return pts1, pts2, ratios_list
+
+
+def filter_by_orientation(
+    pts1: np.ndarray,
+    pts2: np.ndarray,
+    ang1: np.ndarray,
+    ang2: np.ndarray,
+    tolerance: float = 20.0,
+    min_support: int = 3,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Filter candidate matches by requiring consistent orientation difference.
+
+    True copy-move regions undergo a shared rigid or affine rotation. Matches
+    whose relative angles diverge from peer consensus are discarded.
+
+    Parameters:
+        pts1: (N, 2) array of source coordinates.
+        pts2: (N, 2) array of target coordinates.
+        ang1: (N,) array of source keypoint angles in degrees.
+        ang2: (N,) array of target keypoint angles in degrees.
+        tolerance: Angular difference threshold in degrees.
+        min_support: Minimum cluster size required to keep a match group.
+
+    Returns:
+        Tuple of (filtered_pts1, filtered_pts2).
+    """
+    empty = np.empty((0, 2), dtype=np.float32)
+    if pts1 is None or len(pts1) == 0 or len(pts1) < min_support:
+        return empty, empty
+
+    delta = (ang2 - ang1) % 360.0
+    d1 = delta[:, None]
+    d2 = delta[None, :]
+    diff = np.abs(d1 - d2) % 360.0
+    circ_dist = np.minimum(diff, 360.0 - diff)
+    support = np.sum(circ_dist <= tolerance, axis=1)
+
+    keep = support >= min_support
+    if not np.any(keep):
+        return empty, empty
+    return pts1[keep], pts2[keep]
 
 
 def draw_matches(

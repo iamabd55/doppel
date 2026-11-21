@@ -16,17 +16,38 @@ def verify_matches_ransac(
     pts2: np.ndarray,
     ransac_threshold: float = 3.0,
     min_inliers: int = 4,
-    cluster_threshold: float = 50.0,
-) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
-    """Filter candidate matches using hierarchical clustering and RANSAC affine estimation."""
+    cluster_threshold: float = 100.0,
+    min_inlier_ratio: float = 0.0,
+    return_info: bool = False,
+) -> Tuple:
+    """Filter candidate matches using hierarchical clustering and RANSAC affine estimation.
+
+    Parameters:
+        pts1: (M, 2) float32 array of source coordinates.
+        pts2: (M, 2) float32 array of target coordinates.
+        ransac_threshold: Maximum reprojection error in pixels.
+        min_inliers: Minimum number of inliers required to accept a transform.
+        cluster_threshold: Spatial distance threshold for agglomerative clustering.
+        min_inlier_ratio: Minimum ratio of inliers / candidate matches per cluster.
+        return_info: If True, returns an additional metadata dictionary.
+
+    Returns:
+        Tuple of (verified_pts1, verified_pts2, transforms) or
+        (verified_pts1, verified_pts2, transforms, info) if return_info is True.
+    """
     empty = np.empty((0, 2), dtype=np.float32)
+    info = {"candidates": 0, "inliers": 0, "inlier_ratio": 0.0}
+
     if pts1 is None or len(pts1) < min_inliers:
+        if return_info:
+            return empty, empty, [], info
         return empty, empty, []
 
-    # 1. Cluster all matched keypoints spatially into distinct object regions
     all_pts = np.vstack([pts1, pts2])
     n_pairs = len(pts1)
+    info["candidates"] = n_pairs
 
+    # 1. Spatial clustering of keypoints
     try:
         Z = linkage(all_pts, method="ward")
         labels = fcluster(Z, t=cluster_threshold, criterion="distance")
@@ -61,7 +82,8 @@ def verify_matches_ransac(
 
     # 3. Fit an affine transform using RANSAC for each cluster pair
     for pair_key, group in cluster_groups.items():
-        if len(group["src"]) < min_inliers:
+        n_cluster_candidates = len(group["src"])
+        if n_cluster_candidates < min_inliers:
             continue
 
         p_src = np.array(group["src"], dtype=np.float32)
@@ -78,14 +100,17 @@ def verify_matches_ransac(
 
         if M is not None and inlier_mask is not None:
             mask = inlier_mask.ravel().astype(bool)
-            if mask.sum() >= min_inliers:
+            n_inl = int(mask.sum())
+            cluster_ratio = n_inl / max(1, n_cluster_candidates)
+
+            if n_inl >= min_inliers and cluster_ratio >= min_inlier_ratio:
                 verified_src.append(p_src[mask])
                 verified_dst.append(p_dst[mask])
                 transforms.append(M)
 
-    # 4. Fallback: if clustering did not isolate clusters but enough matches exist
-    if len(verified_src) == 0 and n_pairs >= min_inliers:
-        M, inlier_mask = cv2.estimateAffine2D(
+    # 4. Compare with global direct RANSAC
+    if n_pairs >= min_inliers:
+        M_all, inlier_all = cv2.estimateAffine2D(
             pts1,
             pts2,
             method=cv2.RANSAC,
@@ -93,18 +118,29 @@ def verify_matches_ransac(
             maxIters=2000,
             confidence=0.99,
         )
-        if M is not None and inlier_mask is not None:
-            mask = inlier_mask.ravel().astype(bool)
-            if mask.sum() >= min_inliers:
-                verified_src.append(pts1[mask])
-                verified_dst.append(pts2[mask])
-                transforms.append(M)
+        if M_all is not None and inlier_all is not None:
+            mask_all = inlier_all.ravel().astype(bool)
+            direct_count = int(mask_all.sum())
+            direct_ratio = direct_count / max(1, n_pairs)
+
+            if direct_count >= min_inliers and direct_ratio >= min_inlier_ratio:
+                cluster_count = sum(len(s) for s in verified_src)
+                if direct_count > cluster_count:
+                    verified_src = [pts1[mask_all]]
+                    verified_dst = [pts2[mask_all]]
+                    transforms = [M_all]
 
     if len(verified_src) == 0:
+        if return_info:
+            return empty, empty, [], info
         return empty, empty, []
 
-    return (
-        np.vstack(verified_src),
-        np.vstack(verified_dst),
-        transforms,
-    )
+    res_src = np.vstack(verified_src)
+    res_dst = np.vstack(verified_dst)
+    total_inliers = len(res_src)
+    info["inliers"] = total_inliers
+    info["inlier_ratio"] = round(total_inliers / max(1, n_pairs), 3)
+
+    if return_info:
+        return res_src, res_dst, transforms, info
+    return res_src, res_dst, transforms
