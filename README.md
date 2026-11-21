@@ -19,14 +19,14 @@ Doppel is inspired by commercial image integrity tools but it is a small prototy
 | Phase | Work | Status |
 | :--- | :--- | :--- |
 | 1 | DCT baseline and dashboard | Done |
-| 2 | SIFT detection, matching, RANSAC check, mirrored pass | Next |
-| 3 | Synthetic forgery generator and benchmark | Planned |
+| 2 | SIFT detection, matching, RANSAC check, mirrored pass | Done |
+| 3 | Synthetic forgery generator and benchmark | Next |
 | 4 | CNN branch (pretrained features, self-correlation) | Planned |
 | 5 | Fusion and ablation study | Planned |
 | 6 | Scientific image evaluation and basic report | Planned |
 | 7 | Product wrapper (API, queue, new frontend), optional | Planned |
 
-Everything under "DCT Baseline" and "Benchmark Results" below is finished and measured. The hybrid parts are goals, not results yet. The git tag `dct-baseline` marks the frozen baseline.
+Everything under "DCT Baseline", "Benchmark Results", and "SIFT Branch" below is finished and measured. The git tag `dct-baseline` marks the frozen DCT baseline, and `sift-baseline` marks the frozen SIFT branch.
 
 ---
 
@@ -225,13 +225,20 @@ doppel/
 │   ├── detect.py               # end-to-end DCT pipeline
 │   ├── features.py             # sliding window, DCT, zigzag, variance filter
 │   ├── matching.py             # lexsort matching, distance threshold, voting
-│   └── evaluate.py             # precision, recall, F1
+│   ├── evaluate.py             # precision, recall, F1
+│   └── sift/                   # SIFT detection package
+│       ├── features.py         # keypoints, 128-d descriptors
+│       ├── matching.py         # within-image, flip pass, orientation filter
+│       ├── verification.py     # spatial clustering, RANSAC affine verification
+│       └── localization.py     # per-cluster convex hull, detect_sift pipeline
 ├── web/                        # Flask baseline demo (keep as is)
 │   ├── app.py
 │   ├── templates/index.html
 │   └── static/                 # style.css, app.js, lenis.min.js, lenis.css
 ├── scripts/                    # evaluation and test runners
-│   ├── batch_test.py           # evaluation over benchmark images
+│   ├── batch_test.py           # evaluation over benchmark images (DCT)
+│   ├── batch_test_sift.py      # evaluation over benchmark images (SIFT)
+│   ├── ablate_sift.py          # tuning and held-out calibration runner
 │   ├── false_alarm_test.py     # false alarms on originals
 │   ├── experiments.py          # noise, blur and JPEG tests
 │   ├── make_test.py            # synthetic copy-move test images
@@ -240,12 +247,17 @@ doppel/
 │   └── robustness.png
 ├── learning/
 │   └── dct_demo.py             # DCT basis demonstration
+├── results/                    # benchmark CSVs and evaluation summaries
+│   └── phase2_sift/            # SIFT benchmark, ablation, failure analysis
+├── tests/
+│   └── test_flip.py            # coordinate mapping and reflection tests
+├── agentlogs/                  # living project documentation
 ├── pyproject.toml
 ├── DOPPEL_AGENT.md             # working plan and rules for the coding agent
 └── README.md
 ```
 
-Planned additions (not created yet): `detector/sift.py`, `detector/synthetic.py`, CNN and fusion modules, `configs/`, `results/`, and a separate `frontend/` for the Phase 7 dashboard.
+Planned additions: `detector/synthetic.py` (Phase 3), CNN and fusion modules (Phases 4-5), and a separate `frontend/` for the Phase 7 dashboard.
 
 ---
 
@@ -306,19 +318,23 @@ Output is saved to `figures/robustness.png`.
 
 ## DCT vs Keypoint Methods
 
-The motivation for the hybrid. The DCT column is measured in this repo. The keypoint column reflects what the literature reports [3, 4] and is **not measured here yet**. It will be tested in Phase 2.
+Measured comparison between the frozen DCT baseline and the calibrated SIFT branch (`cfg8_best_combo`) on the CoMoFoD benchmark. Both columns reflect measured results from this repository (see `results/phase2_sift/ablation_held_out_split.md` and `results/phase2_sift/failure_analysis.md`).
 
-| Dimension | Block-DCT (this repo, measured) | Keypoint methods such as SIFT (from literature, to be tested) |
+| Dimension | Block-DCT (Phase 1, measured) | SIFT Branch (Phase 2, measured) |
 | :--- | :--- | :--- |
-| Sampling | Dense (255,025 overlapping blocks per 512x512 image) | Sparse (keypoints at corners and blobs) |
-| Translation | 90.0% detection | Expected to work |
-| Rotation | 12.5% detection | Designed to handle rotation |
-| Scaling | 2.5% detection | Designed to handle scaling |
-| Smooth or flat regions | Can detect flat copies when the texture filter allows | Few or no keypoints on smooth areas |
-| Mirrored copies | Not handled | Needs an extra matching pass on a flipped image |
-| Output | Dense pixel mask | Matched point pairs, mask built from them |
+| Sampling | Dense (255,025 overlapping blocks per 512x512 image) | Sparse (DoG keypoints at scale-space extrema) |
+| Translation (Held-Out) | 90.0% detection (36/40, F1 0.817) | 70.0% detection (14/20, F1 0.479) |
+| Rotation (Held-Out) | 12.5% detection (5/40, F1 0.082) | 70.0% detection (14/20, F1 0.521) |
+| Scaling (Held-Out) | 2.5% detection (1/40, F1 0.021) | 75.0% detection (15/20, F1 0.543) |
+| Distortion (Held-Out) | 20.0% detection (8/40, F1 0.145) | 80.0% detection (16/20, F1 0.637) |
+| Combination (Held-Out) | 2.5% detection (1/40, F1 0.018) | 75.0% detection (15/20, F1 0.520) |
+| Overall Detection | 25.5% (51/200) across all forged sets | 74.0% (74/100) on held-out forged sets |
+| Clean False Alarms | 0/40 (0.0% pixel FAR with texture filter) | 8/20 (40.0% image rate, 1.76% pixel FAR) |
+| Smooth / Flat Regions | Detects uniform copies when texture filter permits | Zero keypoints on featureless patches (sets 055-058) |
+| Mirrored Copies | Not handled | Handled via horizontal flip pass |
+| Output | Dense painted block mask | Matched point pairs, per-cluster convex hull mask |
 
-The working idea: DCT gives precise pixel masks for simple copies, and SIFT is added to catch rotated, scaled and mirrored ones. Phase 2 checks whether this is true on CoMoFoD.
+The measured results confirm the hybrid rationale: DCT provides reliable translation detection and zero false alarms on clean images, while SIFT covers geometric rotation, scaling, and reflection where DCT collapses. Phase 3 (synthetic benchmark) and Phase 4 (CNN branch) prepare the ground for hybrid fusion in Phase 5 to suppress remaining false alarms.
 
 ---
 

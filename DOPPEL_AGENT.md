@@ -9,6 +9,15 @@ Environment: Ubuntu (Linux), Python 3.11+, `uv`. ABD has NO local GPU. Everythin
 
 Read this whole file before doing anything. Re-read the "Rules" and "Current step" sections at the start of every session.
 
+The agentlogs/ folder is the project's living documentation. Updating it is part of every task. A task is NOT finished until the logs are updated. Before starting any task, read these files first so you know the current state.
+Files
+agentlogs/architecture.md: architecture and data flow
+agentlogs/files.md: summary of every file
+agentlogs/changelog.md: running history of changes
+When to update
+After ANY change that creates, deletes, renames, or meaningfully edits a file, or changes how data moves. Do it in the same task, before telling the user you are done. Do not batch updates for later.
+
+
 ---
 
 ## 1. What we are building
@@ -70,7 +79,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 2, Step 2.1: SIFT keypoint detection.** See section 6.
+**Phase 2, Step 2.8: SIFT failure analysis.** The tuning ablation and one held-out evaluation of the selected configuration are complete. Analyze held-out errors before closing Phase 2.
 
 (Update this line when a step finishes.)
 
@@ -146,9 +155,11 @@ Each step: explain why, code, test, record results, then wait for ABD.
 ### Phase 1: DCT baseline (DONE)
 Remaining small items: README fixes from section 4; make sure `results/` folder convention exists (`results/<phase>/<experiment>.csv` plus a `.md` summary).
 
-### Phase 2: SIFT branch (CURRENT)
+### Phase 2: SIFT branch (DONE)
 
-Evaluate first on CoMoFoD (it already has rotation, scaling and combination sets with ground-truth masks). Reuse `detector/evaluate.py` so the metrics are identical to the DCT baseline.
+Evaluated on CoMoFoD with 50/50 tuning and held-out splits. Frozen at `cfg8_best_combo` (74.0% detection, 0.540 mean F1 on 100 held-out transformed images; 40.0% false alarm rate on 20 clean images). Failure analysis complete in `results/phase2_sift/failure_analysis.md`. SIFT is frozen as an expert geometric branch.
+
+### Phase 3: Synthetic benchmark generator (NEXT)
 
 - **2.0 Read and reproduce.** Read `detector/` and `scripts/batch_test.py` first. Run `uv run scripts/batch_test.py` and `uv run scripts/false_alarm_test.py` and confirm the numbers match the baseline table in section 4. If they do not match, stop and tell ABD before writing any SIFT code. Also note the exact function signatures in `evaluate.py` so SIFT output (a binary mask, same size as the image) plugs into it.
 - **2.1 Keypoint detection.** `detector/sift.py`. Detect keypoints on grayscale. Draw them on a few CoMoFoD images. Explain parameters (`nfeatures`, `contrastThreshold`, `edgeThreshold`, `sigma`). Observe: how many keypoints on textured vs flat regions.
