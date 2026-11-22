@@ -87,3 +87,100 @@ All notable changes to the Doppel repository are documented here.
 - Result: 74/100 forged images detected at F1 > 0.3, mean F1 0.540; category detection was translation 14/20, rotation 14/20, scaling 15/20, distortion 16/20, combination 15/20.
 - Clean-image false alarms were 8/20 (40.0%), mean pixel FAR 1.7554%, maximum false-positive area 31,129 pixels. These results show improved forged-image detection over tuning, but false alarms remain substantial.
 - Updated current step to Phase 2, Step 2.8 failure analysis.
+
+## [Phase 3: Synthetic Benchmark & Training Data Generator]
+
+### Added (Phase 3, Step 3.0: Data Audit)
+- Created `scripts/audit_biofors.py` to audit downloaded BioFors images against official annotations.
+- Verified 696 train documents (19,105 Blot/Gel, 10,458 Microscopy images) and 54 IDD test documents (2,286 panels).
+- Confirmed strict zero document overlap between train and test pools.
+- Analyzed image resolution distributions: revealed narrow horizontal blot strips (median height 58 px, min 19 px), proving blind downscaling/resizing must be avoided.
+
+### Added (Phase 3, Step 3.1: Config & Splits Manifest)
+- Created `configs/synthetic.yaml` to centrally govern all Phase 3 generation parameters, transform distributions, and frozen SIFT baseline values.
+- Created `scripts/create_splits.py` to partition the 696 train documents into 85% Train (592 documents) and 15% Validation (104 documents) by document ID.
+- Generated `data/biofors/splits/train_manifest.csv`, `data/biofors/splits/val_manifest.csv`, and `data/biofors/splits/test_idd_manifest.csv`.
+
+### Added (Phase 3, Step 3.2: Generator, Unit Tests, and Visualizer)
+- Created `detector/synthetic.py`:
+  - `apply_patch_augmentation`: supports H/V flips, cardinal rotations, continuous arbitrary rotations with canvas expansion, and scaling.
+  - `apply_patch_degradations`: applies blur, noise, gamma adjustments, JPEG recompression, and edge feathering.
+  - `SyntheticCopyMoveGenerator`: native resolution synthesis, texture-aware donor sampling with 10% hard low-texture cases, transform distribution (60% translation, 20% cardinal/flip, 15% arbitrary, 5% combo), and 1:1 clean negative generation.
+  - Produces complete BioFors IDD format: `_F` (forged/negative), `_M` (target mask), `_S` (source mask), `_A` (union mask), and `_meta.json`.
+- Created `tests/test_synthetic.py`: automated pytest suite verifying augmentation invariants, mask union identity (`_A == _M | _S`), clean negative empty masks, exact determinism across identical seeds, thin Western blot strip handling, and zero document leakage.
+- Created `scripts/make_synthetic.py`: batch generation tool reading `configs/synthetic.yaml` to produce train, validation, and test synthetic sets with split manifests.
+- Created `scripts/visualize_synthetic.py`: inspection tool generating multi-column visual grids (`figures/synthetic_samples_grid.png`) with bounding box overlays and metadata annotations.
+- Fixed pytest package discovery by adding `sys.path` insertion to `tests/test_synthetic.py` and adding `[tool.pytest.ini_options] pythonpath = ["."]` in `pyproject.toml`.
+- Generated full Phase 3 synthetic dataset: 2,600 samples (2,000 train, 300 validation, 300 test) with 1:1 clean negative controls and consolidated manifests.
+
+### Added (Phase 3, Step 3.3: Scientific Benchmark Runner)
+- Created `scripts/benchmark.py`:
+  - Evaluates frozen DCT baseline (`Q=8, K=6, min_votes=150`) and frozen SIFT baseline (`cfg8_best_combo`).
+  - Implements official BioFors IDD metrics: pooled pixel precision/recall/F1/MCC and image-level TP/FP/TN/FN/F1/MCC and clean false alarm rate.
+  - Supports dual benchmarking on both synthetic scientific test set (300 images) and real BioFors IDD test set (2,286 panels).
+  - Generates `synthetic_benchmark.csv`, `real_biofors_benchmark.csv`, and `benchmark_summary.md`.
+- Fixed `detect_sift` in `detector/sift/localization.py` to automatically convert 3-channel inputs to grayscale, and updated unpacking in `scripts/benchmark.py`.
+- Benchmark evaluation completed:
+  - Real BioFors IDD (2,286 panels: 91 forged, 2,195 clean):
+    - DCT: 14/91 (15.4%) forged detection, only 8/2,195 (0.36%) clean false alarms.
+    - SIFT: 33/91 (36.3%) forged detection, 49/2,195 (2.23%) clean false alarms.
+    - SIFT achieved 13/17 (76.5%) detection on real microscopy figures (where DCT only caught 1/17 = 5.9%).
+  - Synthetic Test (300 images: 150 forged, 150 clean):
+    - DCT: 20/150 (13.3%) detection, 1/150 (0.7%) false alarm. Caught 20/87 (23.0%) translations, 0/63 on non-rigid transforms.
+    - SIFT: 31/150 (20.7%) detection, 6/150 (4.0%) false alarm. Successfully detected rotations, flips, and combinations where DCT failed.
+
+### Added (Phase 3, Diagnostic Audit & Translation Investigation)
+- Created `scripts/diagnose_translations.py` to investigate low translation recall:
+  - Generates 100 zero-degradation clean translation samples on scientific base images.
+  - Tests frozen DCT vs patch-size-adapted DCT across patch size splits (<500 px vs >=500 px).
+  - Tests SIFT and computes Wilson score 95% confidence intervals.
+  - Audits synthetic training set for global statistical shortcuts and zero document leakage.
+
+### Refactored (Phase 3, Paired-Twin Negative Generation & Degradation Tiers)
+- Refactored `detector/synthetic.py` and `scripts/make_synthetic.py` with Paired-Twin architecture:
+  - Clean negatives are now paired twins sharing the exact same base crop, class, dimensions, doc_id, and whole-image degradation pipeline as the forged twin (no copy-paste).
+  - Implemented 4 concrete degradation tiers ('zero', 'light', 'moderate', 'heavy') distributed evenly at 25% each.
+  - Recorded degradation level, patch area, and pair ID in JSON metadata and manifests.
+- Created `scripts/audit_dataset_shortcuts.py`:
+  - Trains Logistic Regression and HistGradientBoosting on 6 global statistical features (mean, std, Laplacian variance, width, height, file size).
+  - Evaluates via 5-fold cross-validation strictly grouped by document ID (doc_id) to verify near 50% chance-level performance.
+- Created `scripts/tune_adapted_dct.py`:
+  - Evaluates parameter grid on synthetic validation split only (`val_manifest.csv`) to tune adapted DCT without test set leakage.
+- Updated `scripts/benchmark.py`:
+  - Enforces ground-truth overlap (`pix_tp > 0`) for image-level detection.
+  - Computes Wilson score 95% confidence intervals.
+  - Reports recall stratified by degradation tier and patch area bucket.
+
+### Added (Phase 3, Step A & B Implementation)
+- Locked adapted DCT configuration in `configs/dct_adapted.yaml` (`min_votes=75, min_size=64`) chosen strictly on synthetic VAL split.
+- Updated `scripts/audit_dataset_shortcuts.py` to evaluate all 6 features, 5 features without file_size, and individual features alone to verify none exceeds 55% chance threshold.
+- Created `scripts/visualize_twins.py` generating a 12-pair QA grid (`results/phase3_synthetic/twin_grid.png`) covering all 4 degradation tiers and confirming identical base crops, dimensions, and tiers.
+- Enhanced `scripts/benchmark.py` to evaluate Frozen DCT, Adapted DCT, and Frozen SIFT side-by-side with overlap vs any-flagged rules, Wilson 95% CIs, synthetic breakdowns (tier, patch area, transform type), and a 1,000-sample pristine train check.
+
+### Added (Phase 3, Step C: Diagnostic Audits, Stratified Scaling, and Packaging Prep)
+- Executed diagnostic audits in `scripts/pre_step_c_checks.py`:
+  - Discovered SIFT tier anomaly root cause: class and degradation tier were deterministically phase-locked by modular loop counter (`pair_idx % 2` vs `pair_idx % 4`).
+  - Identified patch-size realism gap: 40.6% of synthetic patches were below real BioFors IDD Q1 (1,593 px).
+  - Evaluated Real BioFors IDD fusion: Adapted DCT OR SIFT achieved 48.4% recall at 3.78% clean FAR; AND fusion dropped recall to 12.1%.
+- Refactored `detector/synthetic.py` and `scripts/make_synthetic.py`:
+  - Stratified class x degradation tier sampling with seeded RNG: equal sample counts across all 8 cells (chi-square p = 1.0000).
+  - Enforced 400 px floor for donor patch area with log-uniform area sampling up to 25% of image area.
+  - Implemented multi-copy forgery generation: ~20% of forged samples receive 2 to 3 targets from one source, including adjacent-band repeats for Western blots.
+  - Base images sampled without replacement, capping single document share at 1% of split (80 pairs max for train).
+  - Enforced 100% exclusion of the 177 held-out pristine BioFors train documents from the generator pool (`configs/held_out_pristine_docs.json`).
+- Generated scaled synthetic dataset:
+  - 16,000 train samples (8,000 paired twins across 412 unique documents).
+  - 1,000 validation samples (500 paired twins across 59 unique documents).
+  - 600 synthetic test samples (300 paired twins across 42 unique documents).
+- Re-ran shortcut classification audit:
+  - Logistic Regression accuracy: 50.57% (all 6 features), 50.59% (file size dropped).
+  - HistGradientBoosting accuracy: 51.78% (all 6 features), 51.67% (file size dropped).
+  - Individual non-file-size features: mean 50.02%, std 50.08%, laplacian 50.50%, width 50.00%, height 50.00%. All <= 51.3% (below 55% threshold).
+  - Chi-square independence test: chi2 = 0.0000, p = 1.0000 (perfect stratification).
+- Re-ran synthetic test benchmark (600 samples):
+  - Zero tier recall: Adapted DCT 70.7% (Blot/Gel 78.9%, Microscopy 62.2%), SIFT 18.7% (Blot/Gel 2.6%, Microscopy 35.1%).
+  - Degrades gracefully across tiers: DCT recall 70.7% (zero) -> 44.0% (light) -> 33.3% (moderate) -> 5.3% (heavy).
+  - Every single (class x tier) cell has N >= 37 >= 30 (zero cells with low statistical confidence).
+- Created `docs/phase4_targets.md` pre-registering CNN alone recall > 35.2% at clean FAR <= 1.50%, hybrid fusion recall > 41.8% at clean FAR <= 2.50%, and pixel F1 > 0.1200.
+- Implemented `detector/colab_dataset.py` supporting native variable image sizes (zero-padding / positive-aware random crops), joint geometric augmentations, and split disjointness verification.
+- Authored `notebooks/colab_setup.md` guiding Colab GPU training setup and dataset sanity checks.

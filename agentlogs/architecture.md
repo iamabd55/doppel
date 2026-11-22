@@ -59,6 +59,16 @@ Input Image
 7. Calibration & Validation: Systematic 50/50 partition splits evaluation into tuning sets (images 1-20) and held-out test sets (images 21-40) to guard against threshold overfitting.
 8. Status: Frozen as `cfg8_best_combo` (ratio 0.70, inliers 6, inlier ratio 0.25, flip inliers 10, orientation filter on, cluster convex hull). Failure analysis complete in `results/phase2_sift/failure_analysis.md`. SIFT is locked as an expert branch for transformation coverage.
 
+### Synthetic Benchmark & Training Generator (Phase 3)
+1. Base Dataset: BioFors dataset (PLOS ONE open-access images, ICCV 2021). Strict zero document leakage between train pool (696 documents) and held-out IDD test pool (54 documents). Additionally, 177 pristine train documents are completely excluded from the generator.
+2. Native Resolution Synthesis: Images are preserved at native resolution (no blind resizing), protecting thin Western blot bands (median height 58 px, minimum 19 px).
+3. Paired-Twin Architecture: Clean controls undergo identical degradation pipelines as forged counterparts with zero pasted content. Equal counts across all 8 (class x degradation tier) cells (chi-square independence test: p = 1.0000).
+4. Patch Area Floor and Scaling: Log-uniform donor area sampling with a 400 px floor up to 25% of image area. Multi-copy support introduces 2 to 3 targets in ~20% of forged samples, including adjacent-band repeats for Western blots.
+5. Shortcut Audit: Grouped 5-fold cross-validation by document ID confirms Logistic Regression (50.57%) and HistGradientBoosting (51.78%) cannot separate clean from forged panels on global image statistics.
+6. BioFors IDD Mask Conventions: Produces composite image `_F`, target paste mask `_M`, donor source mask `_S`, union mask `_A = _M | _S`, and full transformation metadata `_meta.json`.
+7. Colab Dataset Loader: `detector/colab_dataset.py` provides PyTorch loading with zero resizing, random positive-aware crops for training (50% positive share, not always centered), full zero-padded images for validation, and split disjointness checks.
+8. Packaging: `data/synthetic_dataset.zip` (761 MB) encapsulates 16,000 train samples and 1,000 validation samples with manifests and `PROVENANCE.txt`, strictly excluding test splits and real BioFors data.
+
 ## Planned Product Layer (Phase 7)
 
 ```

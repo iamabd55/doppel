@@ -1,0 +1,56 @@
+# Configuration for Phase 3: Synthetic Copy-Move Dataset Generation & Evaluation
+seed: 42
+
+paths:
+  images_dir: "data/biofors/images"
+  annotations_dir: "data/biofors/annotations"
+  splits_dir: "data/biofors/splits"
+  synthetic_dir: "data/synthetic"
+
+splits:
+  train_doc_ratio: 0.85
+  val_doc_ratio: 0.15
+  target_classes:
+    - "Blot/Gel"
+    - "Microscopy"
+
+generation:
+  num_train_samples: 16000  # 8,000 paired twins (8,000 forged + 8,000 clean)
+  num_val_samples: 1000     # 500 paired twins (500 forged + 500 clean)
+  num_test_samples: 600     # 300 paired twins (300 forged + 300 clean)
+  clean_negative_ratio: 1.0 # 1:1 clean negatives to forged samples
+  patch_min_area: 400       # Floor 400 px based on coarse real-box stats
+  patch_max_area_ratio: 0.25 # Log-uniform area sampling up to 25% of image area
+  multi_copy_prob: 0.20     # ~20% of forged samples get 2-3 targets from one donor
+  doc_max_share: 0.01       # Cap any single document share at 1% of split
+  min_texture_std: 4.0
+  low_texture_share: 0.10   # 10% hard cases with low texture
+
+transforms:
+  # Distribution matching real-world BioFors duplications
+  translation_prob: 0.60
+  cardinal_rot_flip_prob: 0.20  # 90, 180, 270 deg, H-Flip, V-Flip
+  arbitrary_rot_scale_prob: 0.15
+  combination_prob: 0.05
+  rotation_range: [1.0, 180.0]
+  scale_range: [0.5, 2.0]
+
+degradations:
+  level_distribution:
+    zero: 0.25
+    light: 0.25
+    moderate: 0.25
+    heavy: 0.25
+  edge_feathering_prob: 0.50
+
+# Frozen SIFT baseline parameters from Phase 2 (cfg8_best_combo)
+# HARD RULE: Never retune or modify these values during Phase 3.
+frozen_sift:
+  ratio_threshold: 0.70
+  min_inliers: 6
+  min_inlier_ratio: 0.25
+  min_inliers_flip: 10
+  filter_orientation: true
+  orientation_tolerance: 20.0
+  use_convex_hull: true
+  mask_radius: 12

@@ -25,8 +25,9 @@ After ANY change that creates, deletes, renames, or meaningfully edits a file, o
 A small research prototype that finds copy-move forgery (a region copied and pasted inside the same image) in scientific images such as western blots and microscopy photos. It is a hybrid of three detectors:
 
 1. **DCT** block-based detector. DONE.
-2. **SIFT** keypoint detector with geometric verification. NEXT.
-3. **CNN** learned-feature detector (pretrained backbone + self-correlation). LATER.
+2. **SIFT** keypoint detector with geometric verification. DONE.
+3. **Synthetic Generator** paired-twin benchmark and Colab package. DONE.
+4. **CNN** learned-feature detector (pretrained backbone + self-correlation). NEXT.
 
 Then a fusion step, an ablation study, scientific-image evaluation, a basic report, and (last) a thin product wrapper.
 
@@ -79,7 +80,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 2, Step 2.8: SIFT failure analysis.** The tuning ablation and one held-out evaluation of the selected configuration are complete. Analyze held-out errors before closing Phase 2.
+**Phase 3 Step C: Scaled Dataset Regeneration and Audit Verification:** Refactored paired-twin dataset generator with stratified class x degradation tier sampling (chi-square p=1.0000), 400 px patch floor, multi-copy support (~20%), 1% single document cap, and 100% exclusion of the 177 held-out pristine train documents. Generated 8,000 train pairs (16,000 samples), 500 val pairs (1,000 samples), and 300 test pairs (600 samples). Passed 5-fold grouped shortcut audit (LogReg 50.57%, HistGB 51.78%). Evaluated synthetic test benchmark across all 8 (class x tier) cells (all N >= 37 >= 30). Authored `docs/phase4_targets.md`, `detector/colab_dataset.py`, and `notebooks/colab_setup.md`. Ready for Colab zip packaging upon review.
 
 (Update this line when a step finishes.)
 
@@ -159,39 +160,26 @@ Remaining small items: README fixes from section 4; make sure `results/` folder 
 
 Evaluated on CoMoFoD with 50/50 tuning and held-out splits. Frozen at `cfg8_best_combo` (74.0% detection, 0.540 mean F1 on 100 held-out transformed images; 40.0% false alarm rate on 20 clean images). Failure analysis complete in `results/phase2_sift/failure_analysis.md`. SIFT is frozen as an expert geometric branch.
 
-### Phase 3: Synthetic benchmark generator (NEXT)
+### Phase 3: Synthetic benchmark generator (DONE)
 
-- **2.0 Read and reproduce.** Read `detector/` and `scripts/batch_test.py` first. Run `uv run scripts/batch_test.py` and `uv run scripts/false_alarm_test.py` and confirm the numbers match the baseline table in section 4. If they do not match, stop and tell ABD before writing any SIFT code. Also note the exact function signatures in `evaluate.py` so SIFT output (a binary mask, same size as the image) plugs into it.
-- **2.1 Keypoint detection.** `detector/sift.py`. Detect keypoints on grayscale. Draw them on a few CoMoFoD images. Explain parameters (`nfeatures`, `contrastThreshold`, `edgeThreshold`, `sigma`). Observe: how many keypoints on textured vs flat regions.
-- **2.2 Descriptors.** Extract 128-d descriptors. Explain what a descriptor encodes (gradient orientation histograms in a local patch) and why it is rotation and scale invariant.
-- **2.3 Within-image matching.** Match descriptors against themselves with kNN (k=3), drop the self-match, apply the ratio test (start around 0.5 to 0.6, tune), drop pairs closer than a minimum distance (start near 30 px, tune). Visualize match lines.
-- **2.4 Geometric verification.** `cv2.estimateAffine2D` with RANSAC (start threshold about 3 px). Keep only consistent matches. Handle several clones by clustering matches (hierarchical clustering) and fitting a transform per cluster. Set a minimum inlier count.
-- **2.5 Localization.** Turn verified matches into a mask. Start simple (convex hull or dilated region around inlier keypoints). Optionally refine by warping the source region with the estimated affine and comparing it to the target.
-- **2.6 Flip pass.** Flip the image horizontally, run the same matching of original vs flipped descriptors, map coordinates back, verify with an affine that allows reflection. Unit-test the coordinate mapping.
-- **2.7 Evaluation.** Run on all 5 CoMoFoD categories (40 sets each) and the 40 originals. Report detection rate, pixel precision, recall, F1, and false alarm rate. Compare side by side with the DCT table. Save to `results/phase2_sift/`.
-- **2.8 Failure analysis.** Look at the misses (smooth regions, tiny patches, distortion). Write what SIFT cannot do. Only after this, Phase 2 is done.
+Built Paired-Twin architecture and Colab training package:
+- 16,000 train samples (8,000 pairs), 1,000 val samples (500 pairs), 600 test samples (300 pairs) strictly partitioned by document ID.
+- Chi-square independence verified across class x tier cells (chi2=0.0000, p=1.0000).
+- Shortcut classifier audit passed (LogReg 50.57%, HistGB 51.78%, grouped CV by doc_id; all individual non-file-size features <= 51.3%).
+- Benchmark evaluated on synthetic test split (600 samples) and real BioFors IDD test split (2,286 panels: 91 forged, 2,195 clean).
+- Colab package generated in `data/synthetic_dataset.zip` (761 MB) excluding test split and BioFors real data, with full `PROVENANCE.txt`.
+- Colab PyTorch dataset loader verified with unit tests (`tests/test_colab_dataset.py`).
+- Phase 4 evaluation targets pre-registered in `docs/phase4_targets.md`.
 
-Done when: results CSV + summary exist, SIFT is compared with DCT on every category, false alarms on originals are reported, and ABD confirms.
-
-### Phase 3: Synthetic benchmark generator
-
-Needed for flip testing and for CNN training. Build `scripts/make_synthetic.py` (or `detector/synthetic.py`).
-
-- Base images: a mix of natural images and open-access scientific figures (respect licenses). Keep a source list file.
-- Operations: translate, rotate (about 1 to 180 degrees), scale (about 0.5x to 2.0x, matching CoMoFoD ranges), horizontal flip, and combinations.
-- Post-processing: JPEG compression, Gaussian noise, blur. Optional edge feathering when pasting.
-- Constraints: source and target regions must not overlap too much, and must be larger than a minimum area.
-- Outputs per sample: image (PNG), ground-truth mask of the pasted region (and optionally the source region), and a JSON file with all transform parameters.
-- Splits: train / validation / test, **split by source image** so no leakage. Fixed seed. Start with around 2,000 samples, grow if needed.
-- Tests: mask area matches the pasted area, flip and rotate parameters are recorded correctly.
-- Then score DCT and SIFT on the synthetic test split. Save to `results/phase3_synthetic/`.
-
-### Phase 4: CNN branch
+### Phase 4: CNN branch (NEXT)
 
 - **4.1 Backbone features.** Pretrained ResNet or VGG (frozen). Extract a mid-level feature map (for example stride 16).
 - **4.2 Self-correlation.** L2-normalize features, compute the correlation of every location with every other, mask out self and near neighbors, keep top-k matches per location. Visualize.
 - **4.3 Decoder.** Small convolutional decoder predicts the forgery mask. Loss: BCE + Dice. Train on the synthetic train split, validate on validation, keep the test split untouched.
-- **4.4 Evaluation.** Score on synthetic test and on CoMoFoD. Compare with DCT and SIFT. Save to `results/phase4_cnn/`.
+- **4.4 Evaluation.** Score on synthetic test and on real BioFors IDD test benchmark. Compare with DCT and SIFT baselines. Save to `results/phase4_cnn/`.
+- Pre-registered targets (docs/phase4_targets.md): CNN alone recall > 35.2% at clean FAR <= 1.50%; Hybrid fusion recall > 41.8% at clean FAR <= 2.50%; Pixel F1 > 0.1200.
+- Threshold selection protocol: Strictly chosen on synthetic val plus 1,000 pristine train panels, never on BioFors test or synthetic test.
+- Training executes on Google Colab GPU via `data/synthetic_dataset.zip` and `detector/colab_dataset.py`. Local CPU inference must still be supported.
 - Optional: unfreeze part of the backbone only if frozen results are clearly limited.
 - Training can happen on Colab or Kaggle if there is no local GPU. Keep the training script runnable on both.
 

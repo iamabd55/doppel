@@ -3,6 +3,11 @@
 Summary of files in the Doppel repository:
 
 ## Root Configuration and Documentation
+- `configs/synthetic.yaml`: Centralized configuration for Phase 3 synthetic generation, BioFors splits, degradation parameters, and frozen SIFT baseline values.
+- `configs/dct_adapted.yaml`: Locked adapted DCT parameters (min_votes=75, min_size=64) chosen strictly on synthetic VAL split to improve recall on narrow Western blot bands while bounding clean validation false alarms.
+- `configs/held_out_pristine_docs.json`: JSON record of the 177 held-out pristine BioFors train documents strictly excluded from the synthetic generator.
+- `docs/phase4_targets.md`: Pre-registered evaluation target metrics and methodological protocol for Phase 4 CNN training.
+- `notebooks/colab_setup.md`: Guide and sanity check instructions for setting up the Google Colab training environment.
 - `DOPPEL_AGENT.md`: Primary briefing and rulebook for autonomous and assisted development on Doppel. Contains rules, architecture, frozen baseline numbers, and phase roadmaps.
 - `README.md`: Public project documentation, including problem statement, methodology comparison, status table, and baseline benchmarks.
 - `pyproject.toml`: Python project configuration specifying dependencies (Flask, NumPy, OpenCV, scikit-image, scikit-learn, SciPy) and Python version requirements.
@@ -15,6 +20,8 @@ Summary of files in the Doppel repository:
 - `detector/features.py`: Feature extraction using sliding-window 8x8 block decomposition, standard deviation texture filtering, 2D orthonormal DCT, zigzag coefficient ordering, and quantization.
 - `detector/matching.py`: Candidate matching via lexicographic sorting (`np.lexsort`), neighbor window search, Euclidean distance thresholding, and canonical shift vector orientation.
 - `detector/evaluate.py`: Evaluation utilities computing pixel-level true positives, false positives, false negatives, precision, recall, and F1 score against ground truth masks.
+- `detector/synthetic.py`: Synthetic copy-move generator supporting realistic transformations, post-processing degradations, narrow Western blot strip handling, log-uniform area sampling with 400 px floor, multi-copy support, and BioFors IDD mask conventions (_F, _M, _S, _A, and metadata).
+- `detector/colab_dataset.py`: PyTorch Dataset implementation for Google Colab training. Supports native variable sizes via padding or random crops, joint geometric augmentations, and document-level split disjointness assertions.
 
 ### SIFT Detection Subpackage (`detector/sift/`)
 - `detector/sift/__init__.py`: Package entrypoint re-exporting all SIFT public functions for clean imports.
@@ -24,6 +31,15 @@ Summary of files in the Doppel repository:
 - `detector/sift/localization.py`: Binary mask generation via per-cluster convex hull and keypoint dilation (`create_sift_mask`), and configurable end-to-end detection pipeline (`detect_sift`).
 
 ## Evaluation and Utility Scripts (`scripts/`)
+- `scripts/audit_biofors.py`: Step 3.0 data audit script verifying BioFors document integrity, image counts, class distribution, and resolution profiles.
+- `scripts/create_splits.py`: Step 3.1 split creation script partitioning BioFors train documents into disjoint Train and Validation pools and generating CSV manifests.
+- `scripts/make_synthetic.py`: Step 3.2 batch generation script building synthetic datasets (train, val, test) with full metadata and CSV manifests.
+- `scripts/visualize_synthetic.py`: Visual inspection utility rendering multi-column sample grids (original, forged, M, S, A masks) to figures/synthetic_samples_grid.png.
+- `scripts/visualize_twins.py`: Step A.2 visual QA grid utility rendering 12 paired twins across degradation tiers to results/phase3_synthetic/twin_grid.png.
+- `scripts/benchmark.py`: Step 3.3 scientific benchmark runner evaluating frozen DCT and frozen SIFT on synthetic test sets and real BioFors IDD test panels with image-level and pixel-level metrics.
+- `scripts/diagnose_translations.py`: Diagnostic suite running 100 zero-degradation clean translations, patch size breakdown (<500 px vs >=500 px), and dataset shortcut/leakage audits.
+- `scripts/audit_dataset_shortcuts.py`: Dataset shortcut audit training Logistic Regression and HistGradientBoosting classifiers with 5-fold grouped CV by doc_id to verify ~50% chance-level performance.
+- `scripts/tune_adapted_dct.py`: Validation tuning suite evaluating adapted DCT thresholds strictly on synthetic validation data without test set leakage.
 - `scripts/ablate_sift.py`: SIFT calibration and ablation study runner evaluating parameter sweeps across the 50/50 tuning split (images 1-20) or held-out test split (images 21-40).
 - `scripts/batch_test.py`: Benchmark evaluation script running the DCT detector on CoMoFoD images 001-040 across categories, evaluating against full mask M and paste-only mask B.
 - `scripts/batch_test_sift.py`: Step 2.7 benchmark runner evaluating SIFT across all 5 CoMoFoD categories (200 forged images) and 40 originals, recording per-image CSV and side-by-side DCT vs SIFT summary.
@@ -44,6 +60,8 @@ Summary of files in the Doppel repository:
 
 ## Automated Test Suite (`tests/`)
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.
+- `tests/test_synthetic.py`: Unit tests validating synthetic copy-move generator invariants, mask union identities, determinism, narrow blot strips, and document split disjointness.
+- `tests/test_colab_dataset.py`: Unit tests verifying ColabDoppelDataset PyTorch batch loading, shapes, dtypes, forged fraction, mask coverage, val padding, and split disjointness.
 
 ## Interactive Web Baseline Demo (`web/`)
 - `web/app.py`: Flask application providing an interactive web interface and REST API endpoints (`/api/detect`, `/api/comofod/list`, `/api/comofod/<num>`).
@@ -70,3 +88,6 @@ Summary of files in the Doppel repository:
   - `results/phase2_sift/ablation_tuning_split.md` / `.csv`: Systematic 9-configuration calibration sweep on the 50/50 tuning split (120 images).
   - `results/phase2_sift/ablation_held_out_split.md` / `.csv`: Held-out validation of frozen configuration `cfg8_best_combo` (120 unseen images).
   - `results/phase2_sift/failure_analysis.md`: Detailed failure analysis and Phase 2 sign-off document.
+  - `results/phase3_synthetic/synthetic_benchmark.csv`: Evaluation metrics of frozen DCT and SIFT on the 300 synthetic test images.
+  - `results/phase3_synthetic/real_biofors_benchmark.csv`: Evaluation metrics of frozen DCT and SIFT on 2,286 real BioFors IDD test panels.
+  - `results/phase3_synthetic/benchmark_summary.md`: Consolidated summary and cross-method scientific findings.

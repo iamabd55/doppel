@@ -1,0 +1,15 @@
+# Adapted DCT configuration for scientific image copy-move detection
+# Chosen strictly on synthetic validation split (data/synthetic/val_manifest.csv)
+# Selected to improve recall on narrow Western blot bands while keeping clean validation false alarms <= 2.0%
+# Parameter choice: min_votes=75, min_size=64 (vs frozen baseline min_votes=150, min_size=500)
+# HARD RULE: This configuration is locked and must never be altered based on BioFors test or synthetic test results.
+
+min_votes: 75
+min_size: 64
+Q: 8
+K: 6
+B: 8
+min_std: 4.0
+window: 5
+min_dist: 30
+kernel: 9
