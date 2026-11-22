@@ -62,6 +62,7 @@ class ColabDoppelDataset(Dataset):
         self.pos_crop_prob = pos_crop_prob
         self.pad_multiple = pad_multiple
         self.augment = augment and (split == "train")
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
 
     @property
@@ -72,8 +73,10 @@ class ColabDoppelDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def _pad_to_multiple(self, img: np.ndarray, mask: np.ndarray, multiple: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Zero-pad image and mask to the next multiple of multiple (e.g. 32). Never resizes."""
+    def _pad_to_multiple(
+        self, img: np.ndarray, mask: np.ndarray, valid_mask: np.ndarray, multiple: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Zero-pad image, mask and valid_mask to next multiple of multiple (e.g. 32). Never resizes."""
         h, w = img.shape[:2]
         target_h = int(np.ceil(h / multiple) * multiple)
         target_w = int(np.ceil(w / multiple) * multiple)
@@ -82,7 +85,7 @@ class ColabDoppelDataset(Dataset):
         pad_w = target_w - w
 
         if pad_h == 0 and pad_w == 0:
-            return img, mask
+            return img, mask, valid_mask
 
         top = pad_h // 2
         bottom = pad_h - top
@@ -95,22 +98,27 @@ class ColabDoppelDataset(Dataset):
             padded_img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
 
         padded_mask = cv2.copyMakeBorder(mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-        return padded_img, padded_mask
+        padded_vm = cv2.copyMakeBorder(valid_mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+        return padded_img, padded_mask, padded_vm
 
     def _crop_pair(
         self,
         img: np.ndarray,
         mask: np.ndarray,
+        valid_mask: np.ndarray,
         crop_h: int,
         crop_w: int,
         is_forged: bool,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Crop or pad image and mask to fixed (crop_h, crop_w) for training.
+        rng: Optional[np.random.Generator] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Crop or pad image, mask, and valid_mask to fixed (crop_h, crop_w) for training.
 
         Configurable share of crops (pos_crop_prob, default 50%) contain forged pixels
         by placing a randomly chosen forged pixel somewhere inside the crop window,
         without forcing the crop to be centered on the forgery.
         """
+        if rng is None:
+            rng = self.rng
         h, w = img.shape[:2]
 
         # 1. Zero-pad if image is smaller than target crop
@@ -127,62 +135,76 @@ class ColabDoppelDataset(Dataset):
             else:
                 img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
             mask = cv2.copyMakeBorder(mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+            valid_mask = cv2.copyMakeBorder(valid_mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
             h, w = img.shape[:2]
 
         # 2. Extract crop
         if h == crop_h and w == crop_w:
-            return img, mask
+            return img, mask, valid_mask
 
         max_y = h - crop_h
         max_x = w - crop_w
 
-        if is_forged and np.sum(mask) > 0 and (self.rng.random() < self.pos_crop_prob):
+        if is_forged and np.sum(mask) > 0 and (rng.random() < self.pos_crop_prob):
             # Sample a crop that contains forged pixels, but NOT always centered
             ys, xs = np.where(mask > 0)
             if len(ys) > 0:
-                rand_idx = int(self.rng.integers(0, len(ys)))
+                rand_idx = int(rng.integers(0, len(ys)))
                 yf = ys[rand_idx]
                 xf = xs[rand_idx]
 
                 min_y = max(0, yf - crop_h + 1)
                 max_y_cand = min(yf, max_y)
-                start_y = int(self.rng.integers(min_y, max_y_cand + 1)) if min_y <= max_y_cand else int(self.rng.integers(0, max_y + 1))
+                start_y = int(rng.integers(min_y, max_y_cand + 1)) if min_y <= max_y_cand else int(rng.integers(0, max_y + 1))
 
                 min_x = max(0, xf - crop_w + 1)
                 max_x_cand = min(xf, max_x)
-                start_x = int(self.rng.integers(min_x, max_x_cand + 1)) if min_x <= max_x_cand else int(self.rng.integers(0, max_x + 1))
+                start_x = int(rng.integers(min_x, max_x_cand + 1)) if min_x <= max_x_cand else int(rng.integers(0, max_x + 1))
             else:
-                start_y = int(self.rng.integers(0, max_y + 1))
-                start_x = int(self.rng.integers(0, max_x + 1))
+                start_y = int(rng.integers(0, max_y + 1))
+                start_x = int(rng.integers(0, max_x + 1))
         else:
             # Completely uniform random crop
-            start_y = int(self.rng.integers(0, max_y + 1))
-            start_x = int(self.rng.integers(0, max_x + 1))
+            start_y = int(rng.integers(0, max_y + 1))
+            start_x = int(rng.integers(0, max_x + 1))
 
         end_y = start_y + crop_h
         end_x = start_x + crop_w
 
-        return img[start_y:end_y, start_x:end_x], mask[start_y:end_y, start_x:end_x]
+        return (
+            img[start_y:end_y, start_x:end_x],
+            mask[start_y:end_y, start_x:end_x],
+            valid_mask[start_y:end_y, start_x:end_x],
+        )
 
-    def _joint_augment(self, img: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Apply random flips and rotations jointly to image and mask."""
+    def _joint_augment(
+        self, img: np.ndarray, mask: np.ndarray, valid_mask: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Apply random flips and rotations jointly to image, mask, and valid_mask."""
         # Horizontal flip
         if self.rng.random() < 0.5:
             img = np.fliplr(img)
             mask = np.fliplr(mask)
+            valid_mask = np.fliplr(valid_mask)
 
         # Vertical flip
         if self.rng.random() < 0.5:
             img = np.flipud(img)
             mask = np.flipud(mask)
+            valid_mask = np.flipud(valid_mask)
 
         # Random cardinal rotation (0, 90, 180, 270)
         k = int(self.rng.integers(0, 4))
         if k > 0:
             img = np.rot90(img, k)
             mask = np.rot90(mask, k)
+            valid_mask = np.rot90(valid_mask, k)
 
-        return np.ascontiguousarray(img), np.ascontiguousarray(mask)
+        return (
+            np.ascontiguousarray(img),
+            np.ascontiguousarray(mask),
+            np.ascontiguousarray(valid_mask),
+        )
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         row = self.df.iloc[idx]
@@ -224,22 +246,32 @@ class ColabDoppelDataset(Dataset):
         else:
             mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
+        # Valid mask: initially all 1s (unpadded)
+        valid_mask = np.ones(img.shape[:2], dtype=np.uint8)
+
         # 1. Cropping or padding:
         # Train uses random crops (with 50% positive coverage); Val always returns full image with padding only
         if self.split == "train" and self.crop_size is not None:
-            img, mask = self._crop_pair(img, mask, self.crop_size[0], self.crop_size[1], is_forged)
+            crop_rng = self.rng if self.augment else np.random.default_rng(self.seed + idx)
+            img, mask, valid_mask = self._crop_pair(
+                img, mask, valid_mask, self.crop_size[0], self.crop_size[1], is_forged, rng=crop_rng
+            )
         elif self.pad_multiple > 1:
-            img, mask = self._pad_to_multiple(img, mask, self.pad_multiple)
+            img, mask, valid_mask = self._pad_to_multiple(
+                img, mask, valid_mask, self.pad_multiple
+            )
 
         # 2. Joint geometric augmentation
         if self.augment:
-            img, mask = self._joint_augment(img, mask)
+            img, mask, valid_mask = self._joint_augment(img, mask, valid_mask)
 
         # 3. Convert to float tensors
         # Image: [C, H, W] normalized to [0, 1]
         img_tensor = img.transpose(2, 0, 1).astype(np.float32) / 255.0
         # Mask: [1, H, W] float in {0.0, 1.0}
         mask_tensor = (mask > 127).astype(np.float32)[None, :, :]
+        # Valid mask: [1, H, W] float in {0.0, 1.0}
+        valid_mask_tensor = (valid_mask > 0).astype(np.float32)[None, :, :]
         label_val = 1.0 if is_forged else 0.0
 
         meta = {
@@ -256,6 +288,7 @@ class ColabDoppelDataset(Dataset):
             return {
                 "image": torch.from_numpy(img_tensor),
                 "mask": torch.from_numpy(mask_tensor),
+                "valid_mask": torch.from_numpy(valid_mask_tensor),
                 "label": torch.tensor(label_val, dtype=torch.float32),
                 "meta": meta,
             }
@@ -264,6 +297,7 @@ class ColabDoppelDataset(Dataset):
             return {
                 "image": img_tensor,
                 "mask": mask_tensor,
+                "valid_mask": valid_mask_tensor,
                 "label": label_val,
                 "meta": meta,
             }

@@ -80,7 +80,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 3 Step C: Scaled Dataset Regeneration and Audit Verification:** Refactored paired-twin dataset generator with stratified class x degradation tier sampling (chi-square p=1.0000), 400 px patch floor, multi-copy support (~20%), 1% single document cap, and 100% exclusion of the 177 held-out pristine train documents. Generated 8,000 train pairs (16,000 samples), 500 val pairs (1,000 samples), and 300 test pairs (600 samples). Passed 5-fold grouped shortcut audit (LogReg 50.57%, HistGB 51.78%). Evaluated synthetic test benchmark across all 8 (class x tier) cells (all N >= 37 >= 30). Authored `docs/phase4_targets.md`, `detector/colab_dataset.py`, and `notebooks/colab_setup.md`. Ready for Colab zip packaging upon review.
+**Phase 4 Steps 0 to 4 Complete (CNN Models, Training Pipeline, Smoke and Overfit Tests):** Verified SIFT baseline regression (74% detection, 0.540 F1). Packaged Colab code archive `data/doppel_code.zip` (31 KB) and pristine held-out panels `data/pristine_heldout.zip` (174 MB). Implemented ResNetUNet and ResNetCorrNet with stride-8 correlation, valid-mask filtering, top-4 matches, and full-resolution decoders. All 8 model unit tests passed. Implemented `scripts/train_cnn.py` with AdamW, CosineAnnealingLR, BCE + Dice loss, AMP, and native-resolution validation. Verified 2-epoch smoke tests on both models. Completed 100-epoch overfit test for ResNetCorrNet on CPU (train F1 reached 0.9857, exceeding 0.9 target in ~5.5 minutes). Ready for Colab notebook creation (Step 5).
 
 (Update this line when a step finishes.)
 

@@ -7,6 +7,7 @@ Summary of files in the Doppel repository:
 - `configs/dct_adapted.yaml`: Locked adapted DCT parameters (min_votes=75, min_size=64) chosen strictly on synthetic VAL split to improve recall on narrow Western blot bands while bounding clean validation false alarms.
 - `configs/held_out_pristine_docs.json`: JSON record of the 177 held-out pristine BioFors train documents strictly excluded from the synthetic generator.
 - `docs/phase4_targets.md`: Pre-registered evaluation target metrics and methodological protocol for Phase 4 CNN training.
+- `docs/phase4_log.md`: Test set touch counter and step tracker for Phase 4 CNN training and evaluation.
 - `notebooks/colab_setup.md`: Guide and sanity check instructions for setting up the Google Colab training environment.
 - `DOPPEL_AGENT.md`: Primary briefing and rulebook for autonomous and assisted development on Doppel. Contains rules, architecture, frozen baseline numbers, and phase roadmaps.
 - `README.md`: Public project documentation, including problem statement, methodology comparison, status table, and baseline benchmarks.
@@ -30,7 +31,15 @@ Summary of files in the Doppel repository:
 - `detector/sift/verification.py`: Hierarchical spatial clustering and RANSAC 6-parameter affine estimation (`verify_matches_ransac`) with `min_inlier_ratio` filtering and cluster metadata reporting.
 - `detector/sift/localization.py`: Binary mask generation via per-cluster convex hull and keypoint dilation (`create_sift_mask`), and configurable end-to-end detection pipeline (`detect_sift`).
 
+### CNN Detection Subpackage (`detector/cnn/`)
+- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet and ResNetCorrNet models.
+- `detector/cnn/unet.py`: Baseline ResNet-18 U-Net segmentation network with ImageNet pretraining, multi-scale skip connections, and native resolution mask logits.
+- `detector/cnn/corr_net.py`: Copy-move correlation network with ResNet-18 backbone, stride-8 feature self-correlation module with 128-d projection, Chebyshev spatial self-mask, zero-pad valid-mask filtering, top-4 match extraction, and multi-scale skip decoder.
+
 ## Evaluation and Utility Scripts (`scripts/`)
+- `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
+- `scripts/make_pristine_heldout_zip.py`: Packages 4,039 pristine panels from the 177 held-out train documents into `data/pristine_heldout.zip` for false alarm validation.
+- `scripts/train_cnn.py`: Standalone CNN training script supporting ResNetUNet and ResNetCorrNet, AMP, AdamW, CosineAnnealingLR, BCE + Dice loss, variable-size padding, and native full-resolution validation.
 - `scripts/audit_biofors.py`: Step 3.0 data audit script verifying BioFors document integrity, image counts, class distribution, and resolution profiles.
 - `scripts/create_splits.py`: Step 3.1 split creation script partitioning BioFors train documents into disjoint Train and Validation pools and generating CSV manifests.
 - `scripts/make_synthetic.py`: Step 3.2 batch generation script building synthetic datasets (train, val, test) with full metadata and CSV manifests.
@@ -59,6 +68,7 @@ Summary of files in the Doppel repository:
 - `scripts/test_sift_flip.py`: Step 2.6 demonstration script comparing standard SIFT vs flip pass SIFT on mirrored synthetic copy-move forgeries.
 
 ## Automated Test Suite (`tests/`)
+- `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, and AMP fp16 compatibility for ResNetUNet and ResNetCorrNet.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.
 - `tests/test_synthetic.py`: Unit tests validating synthetic copy-move generator invariants, mask union identities, determinism, narrow blot strips, and document split disjointness.
 - `tests/test_colab_dataset.py`: Unit tests verifying ColabDoppelDataset PyTorch batch loading, shapes, dtypes, forged fraction, mask coverage, val padding, and split disjointness.

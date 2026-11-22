@@ -184,3 +184,40 @@ All notable changes to the Doppel repository are documented here.
 - Created `docs/phase4_targets.md` pre-registering CNN alone recall > 35.2% at clean FAR <= 1.50%, hybrid fusion recall > 41.8% at clean FAR <= 2.50%, and pixel F1 > 0.1200.
 - Implemented `detector/colab_dataset.py` supporting native variable image sizes (zero-padding / positive-aware random crops), joint geometric augmentations, and split disjointness verification.
 - Authored `notebooks/colab_setup.md` guiding Colab GPU training setup and dataset sanity checks.
+
+## [Phase 4: Learned-Feature CNN Detection Branch]
+
+### Added (Phase 4, Step 0: Freeze Verification)
+- Verified SIFT defensive conversion in `detector/sift/localization.py`.
+- Ran CoMoFoD held-out regression benchmark on `cfg8_best_combo`: 74/100 (74.0%) detection, 0.540 mean F1, 8/20 (40.0%) clean original false alarms. Zero regression observed.
+- Verified git object tracking and confirmed data directories and 761 MB dataset zip are properly gitignored.
+
+### Added (Phase 4, Step 1: Colab Archive Packaging)
+- Created `scripts/make_colab_code_zip.sh` archiving core detection code, tests, configs, and training scripts into `data/doppel_code.zip` (31 KB).
+- Created `scripts/make_pristine_heldout_zip.py` archiving 4,039 pristine panels from 177 held-out train documents into `data/pristine_heldout.zip` (174 MB) with metadata manifest. Verified zero overlap with test documents.
+
+### Added (Phase 4, Step 2: CNN Model Architectures)
+- Created `detector/cnn/unet.py` implementing baseline ResNet-18 U-Net segmentation network with ImageNet pretraining, multi-scale skip connections, and native-resolution mask logits.
+- Created `detector/cnn/corr_net.py` implementing ResNet-18 copy-move correlation network with stride-8 self-correlation module, 128-d projection, Chebyshev spatial self-masking (<= 1 cell), zero-pad valid-mask filtering, top-4 match extraction, and multi-scale skip decoder.
+- Created `tests/test_cnn_models.py` with 8 unit tests validating output shapes, narrow biological aspect ratios, valid-mask boundary handling, gradient backpropagation, and AMP fp16 autocast compatibility.
+- Updated `detector/colab_dataset.py` with `valid_mask` generation and deterministic crop offsets for evaluation and overfit testing.
+
+### Added (Phase 4, Step 3: PyTorch Training Script)
+- Created `scripts/train_cnn.py` implementing standalone model training:
+  - Supports `--model unet` and `--model corr`.
+  - Configurable loss function: Binary Cross-Entropy with pos_weight plus soft Dice loss. Clean twins included as all-zero targets.
+  - AdamW optimizer with CosineAnnealingLR scheduler, AMP mixed-precision, and gradient norm clipping at 1.0.
+  - Full-resolution validation at native aspect ratios (padding only, no resizing) evaluating pixel F1, MCC, ROC AUC, synthetic clean FAR, and real pristine held-out FAR.
+  - Checkpoint tracking saving `best.pt`, `last.pt`, `config.json` with commit hash, and per-epoch CSV metrics in `train_log.csv`.
+  - In-memory RAM dataset caching for rapid small-subset testing.
+
+### Verified (Phase 4, Step 4: Smoke Test and Overfit Verification)
+- Executed smoke test on CPU for ResNetUNet (2 epochs, subset 64): training loss dropped from 1.5772 to 1.5012 in 35.3s total.
+- Executed smoke test on CPU for ResNetCorrNet (2 epochs, subset 64): training loss dropped from 1.7716 to 1.6933 in 32.7s total.
+- Executed 100-epoch overfit verification on CPU for ResNetCorrNet (subset 64, no augmentation, batch size 8, lr 1e-3):
+  - Initial (Epoch 1): Train Loss 1.7253, Train F1 0.1587.
+  - Midpoint (Epoch 25): Train Loss 1.0323, Train F1 0.7606.
+  - Target Cross (Epoch 50): Train Loss 0.7498, Train F1 0.9135 (passed > 0.9 target).
+  - Final (Epoch 100): Train Loss 0.6410, Train F1 0.9857.
+  - Total overfit training time: ~5.5 minutes on CPU.
+- Created `docs/phase4_log.md` to track test set access count (0 touches) and phase milestones.
