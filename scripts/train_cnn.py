@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader, Subset
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from detector.cnn import ResNetCorrNet, ResNetUNet
+from detector.cnn import CombinedBCEDiceLoss, ResNetCorrNet, ResNetUNet, soft_dice_loss
 from detector.colab_dataset import ColabDoppelDataset
 
 
@@ -64,35 +64,15 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-class CombinedLoss(nn.Module):
-    """BCE with logits and soft Dice loss on binary masks."""
+class CombinedLoss(CombinedBCEDiceLoss):
+    """BCE with logits and soft Dice loss on binary masks.
+
+    Excludes clean twins (all-zero masks) from the Dice calculation so they do
+    not inflate or distort the Dice term.
+    """
 
     def __init__(self, pos_weight: float = 2.0, bce_weight: float = 1.0, dice_weight: float = 1.0):
-        super().__init__()
-        self.bce_weight = bce_weight
-        self.dice_weight = dice_weight
-        self.register_buffer("pos_weight", torch.tensor([pos_weight]))
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Weighted BCE
-        bce = F.binary_cross_entropy_with_logits(
-            logits, targets, pos_weight=self.pos_weight
-        )
-
-        # Soft Dice
-        probs = torch.sigmoid(logits)
-        b = logits.shape[0]
-        probs_flat = probs.view(b, -1)
-        targets_flat = targets.view(b, -1)
-
-        intersection = (probs_flat * targets_flat).sum(dim=1)
-        cardinality = probs_flat.sum(dim=1) + targets_flat.sum(dim=1)
-        # Smoothing numerator and denominator
-        dice = 1.0 - (2.0 * intersection + 1.0) / (cardinality + 1.0)
-        dice = dice.mean()
-
-        total = self.bce_weight * bce + self.dice_weight * dice
-        return total, bce, dice
+        super().__init__(pos_weight=pos_weight, bce_weight=bce_weight, dice_weight=dice_weight)
 
 
 def filter_min_area(binary_mask: np.ndarray, min_area: int = 50) -> np.ndarray:

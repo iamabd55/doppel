@@ -221,3 +221,18 @@ All notable changes to the Doppel repository are documented here.
   - Final (Epoch 100): Train Loss 0.6410, Train F1 0.9857.
   - Total overfit training time: ~5.5 minutes on CPU.
 - Created `docs/phase4_log.md` to track test set access count (0 touches) and phase milestones.
+
+### Fixed (Phase 4, Step A: Dice Loss Clean Twin Masking)
+- Resolved Dice loss distortion on clean negatives where all-zero target masks contributed ~1.0 loss regardless of prediction quality.
+- Created `detector/cnn/loss.py` with `soft_dice_loss` and `CombinedBCEDiceLoss`:
+  - Computes Dice loss strictly over samples with forged pixels (`targets_flat.sum(dim=1) > 0.5`).
+  - Sets Dice loss to 0.0 with zero gradient for batches containing only clean samples.
+  - Ensures clean samples contribute to BCE only and never add gradient to the Dice term.
+- Updated `scripts/train_cnn.py` to use `CombinedBCEDiceLoss`.
+- Created `tests/test_dice_loss.py` with 5 unit tests validating:
+  - Mixed batch with perfect predictions yields near-zero Dice loss (< 1e-3).
+  - Mixed batch with all-zero predictions yields high Dice loss (> 0.95).
+  - Clean-only batch yields exactly 0.0 Dice loss.
+  - Clean samples contribute strictly zero gradient to Dice in mixed and clean batches.
+  - Combined loss backward pass runs cleanly without NaN.
+- All 30 unit tests in repository passed.

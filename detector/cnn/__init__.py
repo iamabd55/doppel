@@ -6,5 +6,6 @@ Models:
 """
 from detector.cnn.unet import ResNetUNet
 from detector.cnn.corr_net import ResNetCorrNet
+from detector.cnn.loss import soft_dice_loss, CombinedBCEDiceLoss
 
-__all__ = ["ResNetUNet", "ResNetCorrNet"]
+__all__ = ["ResNetUNet", "ResNetCorrNet", "soft_dice_loss", "CombinedBCEDiceLoss"]

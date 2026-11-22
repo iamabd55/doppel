@@ -80,7 +80,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 4 Steps 0 to 4 Complete (CNN Models, Training Pipeline, Smoke and Overfit Tests):** Verified SIFT baseline regression (74% detection, 0.540 F1). Packaged Colab code archive `data/doppel_code.zip` (31 KB) and pristine held-out panels `data/pristine_heldout.zip` (174 MB). Implemented ResNetUNet and ResNetCorrNet with stride-8 correlation, valid-mask filtering, top-4 matches, and full-resolution decoders. All 8 model unit tests passed. Implemented `scripts/train_cnn.py` with AdamW, CosineAnnealingLR, BCE + Dice loss, AMP, and native-resolution validation. Verified 2-epoch smoke tests on both models. Completed 100-epoch overfit test for ResNetCorrNet on CPU (train F1 reached 0.9857, exceeding 0.9 target in ~5.5 minutes). Ready for Colab notebook creation (Step 5).
+**Phase 4 Step A Complete (Dice Loss Clean Twin Masking):** Fixed soft Dice loss to compute strictly over samples containing forged pixels and assign 0.0 loss with zero gradient for clean negative twins. Implemented `detector/cnn/loss.py` and updated `scripts/train_cnn.py`. Verified via unit tests in `tests/test_dice_loss.py` (mixed perfect < 1e-3, all-zero > 0.95, clean-only 0.0, zero gradient from clean samples). Working on Step B (eval and ablation hooks).
 
 (Update this line when a step finishes.)
 

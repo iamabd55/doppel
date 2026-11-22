@@ -32,9 +32,10 @@ Summary of files in the Doppel repository:
 - `detector/sift/localization.py`: Binary mask generation via per-cluster convex hull and keypoint dilation (`create_sift_mask`), and configurable end-to-end detection pipeline (`detect_sift`).
 
 ### CNN Detection Subpackage (`detector/cnn/`)
-- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet and ResNetCorrNet models.
+- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet, ResNetCorrNet, and loss functions.
 - `detector/cnn/unet.py`: Baseline ResNet-18 U-Net segmentation network with ImageNet pretraining, multi-scale skip connections, and native resolution mask logits.
 - `detector/cnn/corr_net.py`: Copy-move correlation network with ResNet-18 backbone, stride-8 feature self-correlation module with 128-d projection, Chebyshev spatial self-mask, zero-pad valid-mask filtering, top-4 match extraction, and multi-scale skip decoder.
+- `detector/cnn/loss.py`: Loss modules for CNN training, including `soft_dice_loss` (filtering clean samples) and `CombinedBCEDiceLoss`.
 
 ## Evaluation and Utility Scripts (`scripts/`)
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
@@ -69,6 +70,7 @@ Summary of files in the Doppel repository:
 
 ## Automated Test Suite (`tests/`)
 - `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, and AMP fp16 compatibility for ResNetUNet and ResNetCorrNet.
+- `tests/test_dice_loss.py`: Unit tests for soft Dice loss ensuring clean twins are excluded from Dice calculations, mixed perfect predictions yield near-zero loss, all-zero predictions yield high loss, and clean samples contribute zero gradient.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.
 - `tests/test_synthetic.py`: Unit tests validating synthetic copy-move generator invariants, mask union identities, determinism, narrow blot strips, and document split disjointness.
 - `tests/test_colab_dataset.py`: Unit tests verifying ColabDoppelDataset PyTorch batch loading, shapes, dtypes, forged fraction, mask coverage, val padding, and split disjointness.
