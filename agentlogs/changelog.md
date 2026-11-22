@@ -253,3 +253,21 @@ All notable changes to the Doppel repository are documented here.
   - Automatically flags slices with low sample size (`N < 30`).
   - Supports `--ablate-corr` and optional CSV export (`--out-csv`).
 - Created `tests/test_checkpoint_selection.py` (6 unit tests) and added ablation test in `tests/test_cnn_models.py`. All 37 tests in test suite passed.
+
+### Added (Phase 4, Step C: Google Colab Training Notebook)
+- Created `scripts/build_phase4_notebook.py` using `nbformat` to construct `notebooks/phase4_train.ipynb`.
+- Notebook contains top README markdown guide and 12 executable cells matching the exact specified workflow:
+  1. GPU and environment check (`nvidia-smi`, `torch.cuda.is_available()`, versions).
+  2. Google Drive mount and asset directory path definition.
+  3. Ephemeral `/content` data copying, unzipping, `sys.path` registration, and file verification.
+  4. Dataset loader sanity check (batch shapes, forged fraction, mask coverage).
+  5. 2-epoch smoke test on both models (`--subset 64`) with full-run time extrapolation.
+  6. 100-epoch overfit test for both models asserting train F1 > 0.90 and consistent Dice loss behavior.
+  7. Full training cell for ResNetUNet (25 epochs, batch 16, 256 crops, pos_crop_prob 0.5, AdamW, cosine, AMP, sync to Drive).
+  8. Full training cell for ResNetCorrNet with identical settings.
+  9. Resumption cell for clean restarts after disconnections.
+  10. Comparison plotting cell rendering loss, val F1, AUC, recall at 1% FAR, and pristine FAR across epochs.
+  11. Multi-model slice evaluation cell running `eval_cnn.py` across slices for UNet, CorrNet, and ablated CorrNet.
+  12. Operating point threshold selection cell invoking `scripts/select_threshold.py`.
+- Implemented `scripts/select_threshold.py` (Step D) to optimize `(pixel_threshold, min_area)` over synthetic validation split and 4,039 pristine panels subject to FAR <= 1.0% budgets, writing `configs/cnn_threshold.yaml`.
+- Rebuilt `data/doppel_code.zip` (68 KB) with all latest code, configs, tests, and scripts.

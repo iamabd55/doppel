@@ -13,7 +13,7 @@ mkdir -p data
 PATHS=(detector configs tests pyproject.toml docs/phase4_targets.md)
 
 # Include training-related scripts if they exist in HEAD
-for script in scripts/train_cnn.py scripts/select_threshold.py; do
+for script in scripts/train_cnn.py scripts/select_threshold.py scripts/eval_cnn.py; do
     if git ls-tree -r --name-only HEAD | grep -qx "$script"; then
         PATHS+=("$script")
     fi
@@ -22,7 +22,7 @@ done
 git archive HEAD --prefix=doppel/ -o "$OUT" "${PATHS[@]}"
 
 # Ensure working directory training scripts or cnn files are bundled if present locally
-for extra in scripts/train_cnn.py scripts/select_threshold.py detector/cnn/unet.py detector/cnn/corr_net.py detector/cnn/infer.py detector/cnn/__init__.py; do
+for extra in scripts/train_cnn.py scripts/select_threshold.py scripts/eval_cnn.py detector/cnn/unet.py detector/cnn/corr_net.py detector/cnn/loss.py detector/cnn/selection.py detector/cnn/infer.py detector/cnn/__init__.py; do
     if [ -f "$extra" ]; then
         python3 -c "
 import zipfile

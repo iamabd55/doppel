@@ -80,7 +80,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 4 Step B Complete (Eval and Ablation Hooks):** Implemented threshold sweeping and budget-aware checkpoint selection (`detector/cnn/selection.py`) prioritizing recall at <= 1% FAR on 1,000 pristine panels and synthetic clean twins with ROC AUC fallback. Added `--time-budget-min`, `--resume`, and fixed seeded pristine sampling to `scripts/train_cnn.py`. Enhanced `ResNetCorrNet` with `--ablate-corr` correlation zeroing. Implemented fine-grained validation and ablation runner `scripts/eval_cnn.py` with slice breakdowns and Wilson 95% CIs. All 37 unit tests passed. Working on Step C (Colab notebook).
+**Phase 4 Steps A, B, and C Complete (Loss Fix, Eval Hooks, Colab Notebook):** Fixed soft Dice loss to compute strictly over forged samples with 5 unit tests. Built budget-aware validation threshold sweeping and checkpoint selection (`detector/cnn/selection.py`) prioritizing recall at <= 1.0% clean/pristine FAR with ROC AUC fallback (6 unit tests). Added `--ablate-corr` correlation ablation support to `ResNetCorrNet`. Implemented slice-level evaluation runner `scripts/eval_cnn.py` and threshold selection script `scripts/select_threshold.py`. Constructed 13-cell Google Colab training notebook `notebooks/phase4_train.ipynb` via `nbformat` with GPU check, ephemeral unzipping, smoke and overfit tests, full training of UNet and CorrNet, resume support, loss/metric curves, multi-slice evaluation tables, and threshold selection. Rebuilt `data/doppel_code.zip` (68 KB). Ready for review.
 
 (Update this line when a step finishes.)
 

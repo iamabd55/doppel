@@ -9,6 +9,7 @@ Summary of files in the Doppel repository:
 - `docs/phase4_targets.md`: Pre-registered evaluation target metrics and methodological protocol for Phase 4 CNN training.
 - `docs/phase4_log.md`: Test set touch counter and step tracker for Phase 4 CNN training and evaluation.
 - `notebooks/colab_setup.md`: Guide and sanity check instructions for setting up the Google Colab training environment.
+- `notebooks/phase4_train.ipynb`: Jupyter notebook for Google Colab (T4 GPU) containing 12 ordered cells for environment setup, data unpacking, loader sanity, smoke test, overfit verification, full training of both models, plotting, detailed slice evaluation, and threshold selection.
 - `DOPPEL_AGENT.md`: Primary briefing and rulebook for autonomous and assisted development on Doppel. Contains rules, architecture, frozen baseline numbers, and phase roadmaps.
 - `README.md`: Public project documentation, including problem statement, methodology comparison, status table, and baseline benchmarks.
 - `pyproject.toml`: Python project configuration specifying dependencies (Flask, NumPy, OpenCV, scikit-image, scikit-learn, SciPy) and Python version requirements.
@@ -39,6 +40,8 @@ Summary of files in the Doppel repository:
 - `detector/cnn/selection.py`: Validation threshold sweep and checkpoint selection logic (`sweep_thresholds`, `is_better_checkpoint`) prioritizing recall at <= 1% FAR with ROC AUC fallback.
 
 ## Evaluation and Utility Scripts (`scripts/`)
+- `scripts/build_phase4_notebook.py`: Generator script that uses `nbformat` to construct `notebooks/phase4_train.ipynb`.
+- `scripts/select_threshold.py`: Step D threshold selection script optimizing (pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels subject to FAR <= 1.0% budgets.
 - `scripts/eval_cnn.py`: Detailed validation and ablation evaluation script breaking down performance by class, tier, transform type, copy count, and patch area, with `--ablate-corr` support.
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
 - `scripts/make_pristine_heldout_zip.py`: Packages 4,039 pristine panels from the 177 held-out train documents into `data/pristine_heldout.zip` for false alarm validation.
