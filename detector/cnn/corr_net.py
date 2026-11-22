@@ -89,6 +89,7 @@ class ResNetCorrNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 1, kernel_size=1),
         )
+        self.ablate_corr = False
 
     def _compute_correlation(
         self,
@@ -174,12 +175,14 @@ class ResNetCorrNet(nn.Module):
         self,
         image: torch.Tensor,
         valid_mask: Optional[torch.Tensor] = None,
+        ablate_corr: bool = False,
     ) -> torch.Tensor:
         """Forward pass.
 
         Args:
             image: [B, 3, H, W] tensor in range [0, 1].
             valid_mask: [B, 1, H, W] optional binary mask of valid (non-padded) pixels.
+            ablate_corr: If True, zeroes correlation channels at decoder input.
 
         Returns:
             [B, 1, H, W] logits mask at input resolution.
@@ -198,6 +201,8 @@ class ResNetCorrNet(nn.Module):
 
         # Correlation at stride 8
         corr_map = self._compute_correlation(x2, valid_mask=valid_mask)
+        if ablate_corr or getattr(self, "ablate_corr", False):
+            corr_map = torch.zeros_like(corr_map)
 
         # Decoder with explicit target spatial size interpolation
         # Stride 16 -> Stride 8

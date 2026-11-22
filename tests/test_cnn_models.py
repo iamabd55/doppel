@@ -48,3 +48,21 @@ def test_model_gradient_flow(model_cls):
     # Verify gradients reached encoder and decoder
     assert model.conv1.weight.grad is not None
     assert model.final_up[-1].weight.grad is not None
+
+
+def test_ablate_corr():
+    """Verify --ablate-corr zeroes correlation channels and alters logits."""
+    model = ResNetCorrNet(pretrained=False)
+    model.eval()
+
+    x = torch.rand(1, 3, 64, 64, dtype=torch.float32)
+    vm = torch.ones(1, 1, 64, 64, dtype=torch.float32)
+
+    with torch.no_grad():
+        out_normal = model(x, valid_mask=vm, ablate_corr=False)
+        out_ablated = model(x, valid_mask=vm, ablate_corr=True)
+
+    assert out_normal.shape == out_ablated.shape == (1, 1, 64, 64)
+    # With non-trivial input, ablated output should differ from normal output
+    diff = torch.abs(out_normal - out_ablated).max()
+    assert diff.item() > 0.0, "Ablating correlation channels should alter model output"

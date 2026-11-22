@@ -32,12 +32,14 @@ Summary of files in the Doppel repository:
 - `detector/sift/localization.py`: Binary mask generation via per-cluster convex hull and keypoint dilation (`create_sift_mask`), and configurable end-to-end detection pipeline (`detect_sift`).
 
 ### CNN Detection Subpackage (`detector/cnn/`)
-- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet, ResNetCorrNet, and loss functions.
+- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet, ResNetCorrNet, loss functions, and checkpoint selection utilities.
 - `detector/cnn/unet.py`: Baseline ResNet-18 U-Net segmentation network with ImageNet pretraining, multi-scale skip connections, and native resolution mask logits.
-- `detector/cnn/corr_net.py`: Copy-move correlation network with ResNet-18 backbone, stride-8 feature self-correlation module with 128-d projection, Chebyshev spatial self-mask, zero-pad valid-mask filtering, top-4 match extraction, and multi-scale skip decoder.
+- `detector/cnn/corr_net.py`: Copy-move correlation network with ResNet-18 backbone, stride-8 feature self-correlation module with 128-d projection, Chebyshev spatial self-mask, zero-pad valid-mask filtering, top-4 match extraction, multi-scale skip decoder, and `--ablate-corr` support.
 - `detector/cnn/loss.py`: Loss modules for CNN training, including `soft_dice_loss` (filtering clean samples) and `CombinedBCEDiceLoss`.
+- `detector/cnn/selection.py`: Validation threshold sweep and checkpoint selection logic (`sweep_thresholds`, `is_better_checkpoint`) prioritizing recall at <= 1% FAR with ROC AUC fallback.
 
 ## Evaluation and Utility Scripts (`scripts/`)
+- `scripts/eval_cnn.py`: Detailed validation and ablation evaluation script breaking down performance by class, tier, transform type, copy count, and patch area, with `--ablate-corr` support.
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
 - `scripts/make_pristine_heldout_zip.py`: Packages 4,039 pristine panels from the 177 held-out train documents into `data/pristine_heldout.zip` for false alarm validation.
 - `scripts/train_cnn.py`: Standalone CNN training script supporting ResNetUNet and ResNetCorrNet, AMP, AdamW, CosineAnnealingLR, BCE + Dice loss, variable-size padding, and native full-resolution validation.
@@ -69,7 +71,8 @@ Summary of files in the Doppel repository:
 - `scripts/test_sift_flip.py`: Step 2.6 demonstration script comparing standard SIFT vs flip pass SIFT on mirrored synthetic copy-move forgeries.
 
 ## Automated Test Suite (`tests/`)
-- `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, and AMP fp16 compatibility for ResNetUNet and ResNetCorrNet.
+- `tests/test_checkpoint_selection.py`: Unit tests verifying threshold sweep and checkpoint selection logic (cold start, ROC AUC fallback, budget transition, budget competition).
+- `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, AMP fp16 compatibility, and `--ablate-corr` correlation ablation.
 - `tests/test_dice_loss.py`: Unit tests for soft Dice loss ensuring clean twins are excluded from Dice calculations, mixed perfect predictions yield near-zero loss, all-zero predictions yield high loss, and clean samples contribute zero gradient.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.
 - `tests/test_synthetic.py`: Unit tests validating synthetic copy-move generator invariants, mask union identities, determinism, narrow blot strips, and document split disjointness.

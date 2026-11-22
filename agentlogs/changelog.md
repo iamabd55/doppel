@@ -236,3 +236,20 @@ All notable changes to the Doppel repository are documented here.
   - Clean samples contribute strictly zero gradient to Dice in mixed and clean batches.
   - Combined loss backward pass runs cleanly without NaN.
 - All 30 unit tests in repository passed.
+
+### Added (Phase 4, Step B: Validation Evaluation and Ablation Hooks)
+- Implemented `detector/cnn/selection.py`:
+  - `sweep_thresholds`: Sweeps candidate thresholds to maximize recall subject to synthetic val clean FAR <= 1.0% AND real pristine held-out FAR <= 1.0%.
+  - `is_better_checkpoint`: Implements strict priority rules where any epoch meeting the 1% FAR budget beats non-budget epochs, higher recall wins within budget, and ROC AUC serves as fallback.
+- Updated `scripts/train_cnn.py`:
+  - Fixed seeded subset sampling of 1,000 pristine panels (`seed=42`) for per-epoch validation.
+  - Checkpoint selection now selects `best.pt` via `is_better_checkpoint`.
+  - Added `--time-budget-min` to cleanly terminate long runs and save `last.pt`.
+  - Full resume support (`--resume`) restoring epoch, optimizer, scaler, scheduler, and best checkpoint state.
+- Enhanced `detector/cnn/corr_net.py` with `--ablate-corr` support to zero out correlation channels at decoder input for ablation analysis.
+- Created `scripts/eval_cnn.py`:
+  - Evaluates models on validation split with fine-grained slice breakdowns: class, degradation tier, transform type, copy count, and patch area.
+  - Computes overlap recall and any-flagged recall with Wilson 95% confidence intervals, pixel F1/MCC, and clean FAR.
+  - Automatically flags slices with low sample size (`N < 30`).
+  - Supports `--ablate-corr` and optional CSV export (`--out-csv`).
+- Created `tests/test_checkpoint_selection.py` (6 unit tests) and added ablation test in `tests/test_cnn_models.py`. All 37 tests in test suite passed.

@@ -36,7 +36,14 @@ from torch.utils.data import DataLoader, Subset
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from detector.cnn import CombinedBCEDiceLoss, ResNetCorrNet, ResNetUNet, soft_dice_loss
+from detector.cnn import (
+    CombinedBCEDiceLoss,
+    ResNetCorrNet,
+    ResNetUNet,
+    is_better_checkpoint,
+    soft_dice_loss,
+    sweep_thresholds,
+)
 from detector.colab_dataset import ColabDoppelDataset
 
 
@@ -87,14 +94,15 @@ def filter_min_area(binary_mask: np.ndarray, min_area: int = 50) -> np.ndarray:
     return filtered
 
 
-def load_pristine_panels(pristine_zip_path: str, max_count: int = 200) -> List[Tuple[np.ndarray, str]]:
-    """Load sample panels from pristine_heldout.zip for false alarm validation."""
+def load_pristine_panels(
+    pristine_zip_path: str, max_count: int = 1000, seed: int = 42
+) -> List[Tuple[np.ndarray, str]]:
+    """Load a fixed seeded subset of panels from pristine_heldout.zip for false alarm validation."""
     if max_count <= 0 or not os.path.exists(pristine_zip_path):
         return []
 
     panels = []
     with zipfile.ZipFile(pristine_zip_path, "r") as zf:
-        # Read manifest
         manifest_names = [n for n in zf.namelist() if n.endswith("pristine_manifest.csv")]
         if not manifest_names:
             return []
@@ -102,11 +110,11 @@ def load_pristine_panels(pristine_zip_path: str, max_count: int = 200) -> List[T
         reader = csv.DictReader(manifest_bytes.splitlines())
         rows = list(reader)
 
-        # Subsample if necessary
         if max_count > 0 and len(rows) > max_count:
-            # Deterministic strided sampling
-            stride = max(1, len(rows) // max_count)
-            rows = rows[::stride][:max_count]
+            rng = np.random.default_rng(seed)
+            sampled_indices = rng.choice(len(rows), size=max_count, replace=False)
+            sampled_indices.sort()
+            rows = [rows[i] for i in sampled_indices]
 
         for r in rows:
             arc_name = f"pristine_heldout/{r['path']}"
@@ -125,25 +133,35 @@ def evaluate(
     val_loader: DataLoader,
     pristine_panels: List[Tuple[np.ndarray, str]],
     device: torch.device,
-    fixed_thresh: float = 0.5,
+    thresholds: Optional[List[float]] = None,
     min_area: int = 50,
-) -> Dict[str, float]:
-    """Run full validation evaluation on uncropped validation panels."""
+) -> Dict[str, Any]:
+    """Run full validation evaluation on uncropped validation panels and sweep thresholds.
+
+    Evaluates:
+      - Pixel F1 and MCC on forged panels.
+      - ROC AUC using image max predicted probability.
+      - False alarm rate on synthetic val clean twins.
+      - False alarm rate on fixed seeded subset of real pristine held-out panels.
+      - Sweeps thresholds to maximize recall subject to both FARs <= 1.0%.
+    """
+    if thresholds is None:
+        thresholds = [round(t, 2) for t in np.linspace(0.05, 0.95, 19).tolist()]
+
     model.eval()
 
     all_scores: List[float] = []
     all_labels: List[int] = []
 
-    # Forged panel metric aggregators
+    forged_records: List[Dict[str, Any]] = []
+    clean_records: List[Dict[str, Any]] = []
+
+    # Aggregators for fixed 0.5 baseline pixel metrics
     forged_tp = 0
     forged_fp = 0
     forged_fn = 0
     forged_tn = 0
-    forged_detected = 0
     forged_total = 0
-
-    # Synthetic clean twin metrics
-    clean_flagged = 0
     clean_total = 0
 
     with torch.no_grad():
@@ -156,7 +174,6 @@ def evaluate(
             logits = model(image, valid_mask=valid_mask)
             probs = torch.sigmoid(logits)
 
-            # Strip padding
             vm_bool = (valid_mask > 0.5)[0, 0].cpu().numpy()
             probs_np = probs[0, 0].cpu().numpy()
             mask_gt_np = (mask_gt[0, 0].cpu().numpy() > 0.5).astype(np.uint8)
@@ -167,37 +184,46 @@ def evaluate(
             all_scores.append(max_prob)
             all_labels.append(1 if is_forged else 0)
 
-            # Binary prediction with min area filtering on valid region
-            pred_binary = np.zeros_like(probs_np, dtype=np.uint8)
-            pred_binary[(probs_np >= fixed_thresh) & vm_bool] = 1
-            pred_filtered = filter_min_area(pred_binary, min_area=min_area)
+            rec: Dict[str, Any] = {"max_prob": max_prob}
 
             if is_forged:
                 forged_total += 1
-                # Overlap rule for detection: at least 1 overlapping pixel with GT
-                overlap_pixels = int(np.sum((pred_filtered > 0) & (mask_gt_np > 0)))
-                if overlap_pixels > 0:
-                    forged_detected += 1
+                for tau in thresholds:
+                    if max_prob < tau:
+                        rec[f"detected_{tau}"] = False
+                    else:
+                        pred_bin = np.zeros_like(probs_np, dtype=np.uint8)
+                        pred_bin[(probs_np >= tau) & vm_bool] = 1
+                        pred_filt = filter_min_area(pred_bin, min_area=min_area)
+                        rec[f"detected_{tau}"] = bool(np.sum((pred_filt > 0) & (mask_gt_np > 0)) > 0)
 
-                # Pixel confusion
-                p_valid = pred_filtered[vm_bool]
+                # Pixel confusion at default threshold 0.5
+                pred_bin_50 = np.zeros_like(probs_np, dtype=np.uint8)
+                pred_bin_50[(probs_np >= 0.5) & vm_bool] = 1
+                pred_filt_50 = filter_min_area(pred_bin_50, min_area=min_area)
+                p_valid = pred_filt_50[vm_bool]
                 g_valid = mask_gt_np[vm_bool]
 
-                tp = int(np.sum((p_valid == 1) & (g_valid == 1)))
-                fp = int(np.sum((p_valid == 1) & (g_valid == 0)))
-                fn = int(np.sum((p_valid == 0) & (g_valid == 1)))
-                tn = int(np.sum((p_valid == 0) & (g_valid == 0)))
+                forged_tp += int(np.sum((p_valid == 1) & (g_valid == 1)))
+                forged_fp += int(np.sum((p_valid == 1) & (g_valid == 0)))
+                forged_fn += int(np.sum((p_valid == 0) & (g_valid == 1)))
+                forged_tn += int(np.sum((p_valid == 0) & (g_valid == 0)))
 
-                forged_tp += tp
-                forged_fp += fp
-                forged_fn += fn
-                forged_tn += tn
+                forged_records.append(rec)
             else:
                 clean_total += 1
-                if np.sum(pred_filtered) > 0:
-                    clean_flagged += 1
+                for tau in thresholds:
+                    if max_prob < tau:
+                        rec[f"flagged_{tau}"] = False
+                    else:
+                        pred_bin = np.zeros_like(probs_np, dtype=np.uint8)
+                        pred_bin[(probs_np >= tau) & vm_bool] = 1
+                        pred_filt = filter_min_area(pred_bin, min_area=min_area)
+                        rec[f"flagged_{tau}"] = bool(np.sum(pred_filt) > 0)
 
-    # Compute pixel metrics on forged validation panels
+                clean_records.append(rec)
+
+    # Pixel metrics at 0.5
     denom_f1 = 2 * forged_tp + forged_fp + forged_fn
     val_f1 = (2 * forged_tp / denom_f1) if denom_f1 > 0 else 0.0
 
@@ -210,18 +236,14 @@ def evaluate(
     )
     val_mcc = (mcc_num / mcc_den) if mcc_den > 0 else 0.0
 
-    val_recall = (forged_detected / forged_total) if forged_total > 0 else 0.0
-    val_clean_far = (clean_flagged / clean_total) if clean_total > 0 else 0.0
-
-    # ROC AUC
     try:
         from sklearn.metrics import roc_auc_score
         val_auc = float(roc_auc_score(all_labels, all_scores))
     except Exception:
         val_auc = 0.50
 
-    # Real pristine panel false alarm rate
-    pristine_flagged = 0
+    # Evaluate pristine held-out panels
+    pristine_records: List[Dict[str, Any]] = []
     pristine_total = len(pristine_panels)
 
     if pristine_total > 0:
@@ -237,34 +259,53 @@ def evaluate(
                 left = (target_w - w) // 2
                 right = (target_w - w) - left
 
-                padded_img = cv2.copyMakeBorder(p_img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+                padded_img = cv2.copyMakeBorder(
+                    p_img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0]
+                )
                 vm = np.zeros((target_h, target_w), dtype=np.uint8)
                 vm[top : top + h, left : left + w] = 1
 
-                t_img = torch.from_numpy(padded_img.transpose(2, 0, 1).astype(np.float32) / 255.0).unsqueeze(0).to(device)
+                t_img = torch.from_numpy(
+                    padded_img.transpose(2, 0, 1).astype(np.float32) / 255.0
+                ).unsqueeze(0).to(device)
                 t_vm = torch.from_numpy(vm.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device)
 
                 logits = model(t_img, valid_mask=t_vm)
                 probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
-                pred_bin = np.zeros_like(probs, dtype=np.uint8)
-                pred_bin[(probs >= fixed_thresh) & (vm > 0)] = 1
-                filtered_pred = filter_min_area(pred_bin, min_area=min_area)
+                valid_probs = probs[vm > 0]
+                max_prob = float(valid_probs.max()) if len(valid_probs) > 0 else 0.0
 
-                if np.sum(filtered_pred) > 0:
-                    pristine_flagged += 1
+                p_rec: Dict[str, Any] = {"max_prob": max_prob}
+                for tau in thresholds:
+                    if max_prob < tau:
+                        p_rec[f"flagged_{tau}"] = False
+                    else:
+                        pred_bin = np.zeros_like(probs, dtype=np.uint8)
+                        pred_bin[(probs >= tau) & (vm > 0)] = 1
+                        pred_filt = filter_min_area(pred_bin, min_area=min_area)
+                        p_rec[f"flagged_{tau}"] = bool(np.sum(pred_filt) > 0)
+                pristine_records.append(p_rec)
 
-        pristine_far = pristine_flagged / pristine_total
-    else:
-        pristine_far = 0.0
+    # Run threshold sweep to find optimal threshold within 1% FAR budget
+    sweep_res = sweep_thresholds(
+        forged_records,
+        clean_records,
+        pristine_records,
+        thresholds=thresholds,
+        min_area=min_area,
+        max_far=0.01,
+    )
 
     return {
         "val_forged_f1": val_f1,
         "val_forged_mcc": val_mcc,
         "val_roc_auc": val_auc,
-        "val_recall_at_50": val_recall,
-        "val_synth_clean_far": val_clean_far,
-        "val_pristine_far": pristine_far,
+        "val_recall_budget": sweep_res["best_recall"],
+        "val_thresh_budget": sweep_res["best_threshold"],
+        "val_meets_budget": 1 if sweep_res["meets_budget"] else 0,
+        "val_synth_clean_far": sweep_res["best_synth_far"],
+        "val_pristine_far": sweep_res["best_pristine_far"],
         "forged_count": forged_total,
         "clean_count": clean_total,
         "pristine_count": pristine_total,
@@ -284,12 +325,14 @@ def parse_args():
     parser.add_argument("--out-dir", type=str, default="checkpoints/run1", help="Output directory for checkpoints and logs.")
     parser.add_argument("--data-dir", type=str, default="data/synthetic", help="Path to synthetic dataset directory.")
     parser.add_argument("--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine held-out zip.")
-    parser.add_argument("--pristine-val-count", type=int, default=200, help="Max pristine panels to evaluate per epoch.")
+    parser.add_argument("--pristine-val-count", type=int, default=1000, help="Max pristine panels to evaluate per epoch.")
     parser.add_argument("--crop-size", type=int, default=256, help="Square crop size for training.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--val-interval", type=int, default=1, help="Run validation every N epochs.")
     parser.add_argument("--no-aug", action="store_true", help="Disable training augmentations (for overfit test).")
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision.")
+    parser.add_argument("--ablate-corr", action="store_true", help="Ablate correlation channels at decoder input.")
+    parser.add_argument("--time-budget-min", type=float, default=None, help="Stop training cleanly after this many elapsed minutes.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
     return parser.parse_args()
 
@@ -403,12 +446,14 @@ def main():
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     start_epoch = 1
-    best_val_metric = -1.0
-    last_val_metrics = {
+    best_checkpoint_eval: Optional[Dict[str, Any]] = None
+    last_val_metrics: Dict[str, Any] = {
         "val_forged_f1": 0.0,
         "val_forged_mcc": 0.0,
         "val_roc_auc": 0.5,
-        "val_recall_at_50": 0.0,
+        "val_recall_budget": 0.0,
+        "val_thresh_budget": 0.5,
+        "val_meets_budget": 0,
         "val_synth_clean_far": 0.0,
         "val_pristine_far": 0.0,
     }
@@ -419,13 +464,13 @@ def main():
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        if "scaler_state_dict" in ckpt and use_amp:
+        if "scaler_state_dict" in ckpt and use_amp and ckpt["scaler_state_dict"] is not None:
             scaler.load_state_dict(ckpt["scaler_state_dict"])
         if "scheduler_state_dict" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         start_epoch = ckpt["epoch"] + 1
-        best_val_metric = ckpt.get("best_val_metric", -1.0)
-        print(f"[INFO] Resumed from epoch {ckpt['epoch']}, best metric was {best_val_metric:.4f}")
+        best_checkpoint_eval = ckpt.get("best_checkpoint_eval", None)
+        print(f"[INFO] Resumed from epoch {ckpt['epoch']}")
 
     # CSV log setup
     log_csv_path = out_dir / "train_log.csv"
@@ -438,7 +483,9 @@ def main():
         "val_forged_f1",
         "val_forged_mcc",
         "val_roc_auc",
-        "val_recall_at_50",
+        "val_recall_budget",
+        "val_thresh_budget",
+        "val_meets_budget",
         "val_synth_clean_far",
         "val_pristine_far",
         "lr",
@@ -454,6 +501,8 @@ def main():
     print(f"STARTING TRAINING: model={args.model}, epochs={args.epochs}, lr={args.lr}")
     print(f"Output directory: {out_dir}")
     print(f"======================================================================\n")
+
+    train_start_time = time.time()
 
     for epoch in range(start_epoch, args.epochs + 1):
         t0 = time.time()
@@ -514,7 +563,6 @@ def main():
                 val_loader,
                 pristine_panels,
                 device,
-                fixed_thresh=0.5,
                 min_area=50,
             )
             last_val_metrics = val_metrics
@@ -524,15 +572,17 @@ def main():
         val_f1 = val_metrics["val_forged_f1"]
         val_mcc = val_metrics["val_forged_mcc"]
         val_auc = val_metrics["val_roc_auc"]
-        val_rec = val_metrics["val_recall_at_50"]
+        val_rec_budget = val_metrics["val_recall_budget"]
+        val_thresh_budget = val_metrics["val_thresh_budget"]
+        val_meets_budget = bool(val_metrics["val_meets_budget"] == 1)
         synth_far = val_metrics["val_synth_clean_far"]
         pristine_far = val_metrics["val_pristine_far"]
 
         print(
             f"Epoch {epoch:3d}/{args.epochs:3d} | "
             f"Train Loss: {avg_loss:.4f} (F1: {train_f1:.4f}) | "
-            f"Val F1: {val_f1:.4f} | MCC: {val_mcc:.4f} | AUC: {val_auc:.4f} | "
-            f"Rec@50: {val_rec*100:.1f}% | "
+            f"Val F1: {val_f1:.4f} | AUC: {val_auc:.4f} | "
+            f"Rec@Budget: {val_rec_budget*100:.1f}% (tau={val_thresh_budget:.2f}, meets={val_meets_budget}) | "
             f"SynthFAR: {synth_far*100:.2f}% | PristineFAR: {pristine_far*100:.2f}% | "
             f"({elapsed:.1f}s)"
         )
@@ -549,7 +599,9 @@ def main():
                 f"{val_f1:.4f}",
                 f"{val_mcc:.4f}",
                 f"{val_auc:.4f}",
-                f"{val_rec:.4f}",
+                f"{val_rec_budget:.4f}",
+                f"{val_thresh_budget:.2f}",
+                1 if val_meets_budget else 0,
                 f"{synth_far:.6f}",
                 f"{pristine_far:.6f}",
                 f"{current_lr:.6e}",
@@ -563,7 +615,7 @@ def main():
             "optimizer_state_dict": optimizer.state_dict(),
             "scaler_state_dict": scaler.state_dict() if use_amp else None,
             "scheduler_state_dict": scheduler.state_dict(),
-            "best_val_metric": best_val_metric,
+            "best_checkpoint_eval": best_checkpoint_eval,
             "val_metrics": val_metrics,
             "config": config_dict,
         }
@@ -571,13 +623,27 @@ def main():
         # Always save last.pt for resume
         torch.save(ckpt_state, out_dir / "last.pt")
 
-        # Select best checkpoint by val metric: composite of Val F1 and AUC
-        val_target_metric = val_f1 + 0.5 * val_auc
-        if val_target_metric > best_val_metric:
-            best_val_metric = val_target_metric
-            ckpt_state["best_val_metric"] = best_val_metric
+        # Select best checkpoint: recall at FAR <= 1% on pristine + synthetic clean, with ROC AUC as fallback
+        current_checkpoint_eval = {
+            "meets_budget": val_meets_budget,
+            "recall": val_rec_budget,
+            "roc_auc": val_auc,
+            "epoch": epoch,
+        }
+
+        if is_better_checkpoint(current_checkpoint_eval, best_checkpoint_eval):
+            best_checkpoint_eval = current_checkpoint_eval
+            ckpt_state["best_checkpoint_eval"] = best_checkpoint_eval
             torch.save(ckpt_state, out_dir / "best.pt")
-            print(f"  --> Saved new best checkpoint to {out_dir / 'best.pt'} (score: {best_val_metric:.4f})")
+            crit_str = "recall@1%FAR" if val_meets_budget else "ROC_AUC_fallback"
+            val_score = val_rec_budget if val_meets_budget else val_auc
+            print(f"  --> Saved new best checkpoint to {out_dir / 'best.pt'} ({crit_str}: {val_score:.4f})")
+
+        # Check optional time budget
+        elapsed_min = (time.time() - train_start_time) / 60.0
+        if args.time_budget_min and elapsed_min >= args.time_budget_min:
+            print(f"\n[INFO] Time budget of {args.time_budget_min:.1f} minutes reached ({elapsed_min:.1f}m elapsed). Stopping.")
+            break
 
     print(f"\n[INFO] Training complete. Artifacts saved in {out_dir}")
 

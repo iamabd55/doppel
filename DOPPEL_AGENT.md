@@ -80,7 +80,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 4 Step A Complete (Dice Loss Clean Twin Masking):** Fixed soft Dice loss to compute strictly over samples containing forged pixels and assign 0.0 loss with zero gradient for clean negative twins. Implemented `detector/cnn/loss.py` and updated `scripts/train_cnn.py`. Verified via unit tests in `tests/test_dice_loss.py` (mixed perfect < 1e-3, all-zero > 0.95, clean-only 0.0, zero gradient from clean samples). Working on Step B (eval and ablation hooks).
+**Phase 4 Step B Complete (Eval and Ablation Hooks):** Implemented threshold sweeping and budget-aware checkpoint selection (`detector/cnn/selection.py`) prioritizing recall at <= 1% FAR on 1,000 pristine panels and synthetic clean twins with ROC AUC fallback. Added `--time-budget-min`, `--resume`, and fixed seeded pristine sampling to `scripts/train_cnn.py`. Enhanced `ResNetCorrNet` with `--ablate-corr` correlation zeroing. Implemented fine-grained validation and ablation runner `scripts/eval_cnn.py` with slice breakdowns and Wilson 95% CIs. All 37 unit tests passed. Working on Step C (Colab notebook).
 
 (Update this line when a step finishes.)
 
