@@ -14,6 +14,8 @@
 | Step 2 | CNN Models (ResNetUNet, ResNetCorrNet) | COMPLETED | 2026-11-22 | Verified forward passes, variable image sizes, valid-pixel masking, fp16/autocast, gradient flow. 8/8 tests passed. |
 | Step 3 | Training script implementation | COMPLETED | 2026-11-22 | `scripts/train_cnn.py` with AdamW, CosineAnnealingLR, BCE+Dice loss, native full-res validation. |
 | Step 4 | Smoke test and CPU overfit verification | COMPLETED | 2026-11-22 | ResNetCorrNet overfit test on subset 64 reached 0.9857 train F1 (target > 0.9) in ~5.5 minutes on CPU. |
-| Step 5 | Colab Notebook creation | PENDING | - | `notebooks/phase4_train.ipynb` for T4 GPU execution. |
-| Step 6 | Validation threshold selection | PENDING | - | Tune (pixel_thresh, min_area) on synthetic VAL + pristine train. |
-| Step 7 | One-shot final evaluation | PENDING | - | Touch count 1: evaluate locked models on synthetic test and real BioFors IDD test. |
+| Step A | Fix Dice loss clean twin masking | COMPLETED | 2026-11-22 | Isolated Dice computation to forged samples; clean samples contribute to BCE only and 0 to Dice. 5 unit tests passed. |
+| Step B | Validation evaluation and ablation hooks | COMPLETED | 2026-11-22 | Threshold sweep subject to 1% FAR on 1,000 pristine panels and clean twins; `scripts/eval_cnn.py` with slice breakdowns; `--ablate-corr` hook. |
+| Step C | Google Colab training notebook | COMPLETED | 2026-11-22 | `notebooks/phase4_train.ipynb` (13 cells) and `scripts/select_threshold.py`. Code archive rebuilt (`data/doppel_code.zip`, 60 KB). |
+| Step D | Validation threshold selection | PENDING | - | Run in notebook on synthetic VAL + 4,039 pristine panels to write `configs/cnn_threshold.yaml`. |
+| Step E | One-shot final real evaluation | PENDING | - | Touch count 1: evaluate locked models on synthetic test and real BioFors IDD test after user approval. |
