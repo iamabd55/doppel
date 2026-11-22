@@ -271,3 +271,13 @@ All notable changes to the Doppel repository are documented here.
   12. Operating point threshold selection cell invoking `scripts/select_threshold.py`.
 - Implemented `scripts/select_threshold.py` (Step D) to optimize `(pixel_threshold, min_area)` over synthetic validation split and 4,039 pristine panels subject to FAR <= 1.0% budgets, writing `configs/cnn_threshold.yaml`.
 - Rebuilt `data/doppel_code.zip` (68 KB) with all latest code, configs, tests, and scripts.
+
+### Fixed (Phase 4, Colab Notebook Call Audit & Local Dry-Run Verification)
+- Fixed `TypeError: ColabDoppelDataset.__init__() got an unexpected keyword argument 'csv_path'` in notebook Cell 4 by aligning dataset invocation across `scripts/build_phase4_notebook.py`, `scripts/eval_cnn.py`, and `scripts/select_threshold.py` to match the real `manifest_path` and `images_dir` signature.
+- Audited all notebook cells (4 to 12) for kwargs, CLI flags, paths, filenames, and manifest names:
+  - Added `--drive-sync-dir` support to `scripts/train_cnn.py` copying `last.pt`, `train_log.csv`, `config.json`, and `best.pt` to Drive after EVERY epoch to prevent progress loss on disconnect.
+  - Added `--pristine-zip` to validation evaluation calls in Cell 11.
+  - Updated CLI parsers to accept optional `args` lists for testability.
+- Added `tests/test_notebook_calls.py` with 4 AST and signature/argparse validation tests checking dataset kwargs and CLI commands for `train_cnn.py`, `eval_cnn.py`, and `select_threshold.py`.
+- Created `scripts/dryrun_notebook.py` executing notebook code cells 4, 5, and shortened 6 locally in a temporary directory on CPU with `--subset 16`, verifying end-to-end execution and per-epoch Drive synchronization.
+- Rebuilt `notebooks/phase4_train.ipynb` and `data/doppel_code.zip` (60 KB) with updated working tree contents. All 41 unit tests passed.

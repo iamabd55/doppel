@@ -19,12 +19,13 @@ import csv
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -312,7 +313,7 @@ def evaluate(
     }
 
 
-def parse_args():
+def parse_args(args: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Train Phase 4 CNN copy-move detector.")
     parser.add_argument("--model", type=str, choices=["unet", "corr"], required=True, help="Model architecture.")
     parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs.")
@@ -333,8 +334,9 @@ def parse_args():
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision.")
     parser.add_argument("--ablate-corr", action="store_true", help="Ablate correlation channels at decoder input.")
     parser.add_argument("--time-budget-min", type=float, default=None, help="Stop training cleanly after this many elapsed minutes.")
+    parser.add_argument("--drive-sync-dir", type=str, default=None, help="Directory to sync checkpoints and train_log.csv to after every epoch.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def main():
@@ -631,13 +633,28 @@ def main():
             "epoch": epoch,
         }
 
+        saved_new_best = False
         if is_better_checkpoint(current_checkpoint_eval, best_checkpoint_eval):
             best_checkpoint_eval = current_checkpoint_eval
             ckpt_state["best_checkpoint_eval"] = best_checkpoint_eval
             torch.save(ckpt_state, out_dir / "best.pt")
+            saved_new_best = True
             crit_str = "recall@1%FAR" if val_meets_budget else "ROC_AUC_fallback"
             val_score = val_rec_budget if val_meets_budget else val_auc
             print(f"  --> Saved new best checkpoint to {out_dir / 'best.pt'} ({crit_str}: {val_score:.4f})")
+
+        # Sync checkpoints and log to Drive after EVERY epoch
+        if args.drive_sync_dir:
+            sync_dir = Path(args.drive_sync_dir)
+            sync_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(out_dir / "last.pt", sync_dir / "last.pt")
+                shutil.copy2(out_dir / "train_log.csv", sync_dir / "train_log.csv")
+                shutil.copy2(out_dir / "config.json", sync_dir / "config.json")
+                if saved_new_best or not (sync_dir / "best.pt").exists():
+                    shutil.copy2(out_dir / "best.pt", sync_dir / "best.pt")
+            except Exception as e:
+                print(f"[WARNING] Failed to sync checkpoint to Drive: {e}")
 
         # Check optional time budget
         elapsed_min = (time.time() - train_start_time) / 60.0

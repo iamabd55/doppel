@@ -41,6 +41,7 @@ Summary of files in the Doppel repository:
 
 ## Evaluation and Utility Scripts (`scripts/`)
 - `scripts/build_phase4_notebook.py`: Generator script that uses `nbformat` to construct `notebooks/phase4_train.ipynb`.
+- `scripts/dryrun_notebook.py`: End-to-end local dry-run script executing notebook code cells 4, 5, and shortened 6 in a temporary directory on CPU with `--subset 16` and verifying Drive syncing.
 - `scripts/select_threshold.py`: Step D threshold selection script optimizing (pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels subject to FAR <= 1.0% budgets.
 - `scripts/eval_cnn.py`: Detailed validation and ablation evaluation script breaking down performance by class, tier, transform type, copy count, and patch area, with `--ablate-corr` support.
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
@@ -78,6 +79,7 @@ Summary of files in the Doppel repository:
 - `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, AMP fp16 compatibility, and `--ablate-corr` correlation ablation.
 - `tests/test_dice_loss.py`: Unit tests for soft Dice loss ensuring clean twins are excluded from Dice calculations, mixed perfect predictions yield near-zero loss, all-zero predictions yield high loss, and clean samples contribute zero gradient.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.
+- `tests/test_notebook_calls.py`: AST and inspect/argparse validation tests ensuring notebook code cells use valid signatures and CLI parameters.
 - `tests/test_synthetic.py`: Unit tests validating synthetic copy-move generator invariants, mask union identities, determinism, narrow blot strips, and document split disjointness.
 - `tests/test_colab_dataset.py`: Unit tests verifying ColabDoppelDataset PyTorch batch loading, shapes, dtypes, forged fraction, mask coverage, val padding, and split disjointness.
 

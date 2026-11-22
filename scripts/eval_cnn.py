@@ -163,7 +163,7 @@ def evaluate_slice(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def parse_args():
+def parse_args(args: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Evaluate CNN copy-move detector across validation slices.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to .pt checkpoint.")
     parser.add_argument("--model", type=str, choices=["unet", "corr"], default=None, help="Model type (auto-detected if omitted).")
@@ -175,7 +175,7 @@ def parse_args():
     parser.add_argument("--ablate-corr", action="store_true", help="Zero out correlation channels at inference.")
     parser.add_argument("--out-csv", type=str, default=None, help="Optional output CSV path for slice results.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def main():
@@ -223,8 +223,8 @@ def main():
             raise FileNotFoundError(f"Missing val manifest: {val_manifest}")
 
     val_dataset = ColabDoppelDataset(
-        csv_path=str(val_manifest),
-        data_dir=args.data_dir,
+        manifest_path=str(val_manifest),
+        images_dir=args.data_dir,
         split="val",
         pad_multiple=32,
         augment=False,

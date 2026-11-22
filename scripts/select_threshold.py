@@ -78,7 +78,7 @@ def load_all_pristine_panels(pristine_zip_path: str) -> List[Tuple[np.ndarray, s
     return panels
 
 
-def parse_args():
+def parse_args(args: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Select optimal (threshold, min_area) operating point.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to best.pt checkpoint.")
     parser.add_argument("--model", type=str, choices=["unet", "corr"], default=None, help="Model architecture.")
@@ -88,7 +88,7 @@ def parse_args():
     parser.add_argument("--out-yaml", type=str, default="configs/cnn_threshold.yaml", help="Output path for YAML config.")
     parser.add_argument("--max-far", type=float, default=0.01, help="Max false alarm rate budget (default 0.01 = 1.0%).")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def main():
@@ -129,8 +129,8 @@ def main():
             raise FileNotFoundError(f"Missing val manifest: {val_manifest}")
 
     val_dataset = ColabDoppelDataset(
-        csv_path=str(val_manifest),
-        data_dir=args.data_dir,
+        manifest_path=str(val_manifest),
+        images_dir=args.data_dir,
         split="val",
         pad_multiple=32,
         augment=False,

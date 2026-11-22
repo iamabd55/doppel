@@ -131,8 +131,8 @@ from detector.colab_dataset import ColabDoppelDataset
 
 train_manifest = SYNTH_DIR / 'train_manifest.csv'
 dataset_sanity = ColabDoppelDataset(
-    csv_path=str(train_manifest),
-    data_dir=str(CONTENT_DATA),
+    manifest_path=str(train_manifest),
+    images_dir=str(SYNTH_DIR),
     split='train',
     crop_size=(256, 256),
     pos_crop_prob=0.5,
@@ -276,6 +276,7 @@ else:
         "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
         "--pristine-val-count", "1000",
         "--out-dir", str(unet_local_dir),
+        "--drive-sync-dir", str(unet_drive_dir),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
     ]
     subprocess.run(cmd_unet, check=True)
@@ -307,6 +308,7 @@ else:
         "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
         "--pristine-val-count", "1000",
         "--out-dir", str(corr_local_dir),
+        "--drive-sync-dir", str(corr_drive_dir),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
     ]
     subprocess.run(cmd_corr, check=True)
@@ -343,6 +345,7 @@ if resume_ckpt.exists():
         "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
         "--pristine-val-count", "1000",
         "--out-dir", str(local_resume_dir),
+        "--drive-sync-dir", str(DRIVE_RUNS_DIR / f"{RESUME_MODEL}_run"),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
     ]
     subprocess.run(cmd_resume, check=True)
@@ -436,13 +439,13 @@ corr_eval_csv = DRIVE_RUNS_DIR / "eval_corr.csv"
 corr_abl_csv = DRIVE_RUNS_DIR / "eval_corr_ablated.csv"
 
 print("================ Evaluating ResNetUNet ================")
-!python3 "$eval_script" --checkpoint "$unet_ckpt" --model unet --val-manifest "$val_csv" --data-dir "$CONTENT_DATA" --out-csv "$unet_eval_csv"
+!python3 "$eval_script" --checkpoint "$unet_ckpt" --model unet --val-manifest "$val_csv" --data-dir "$CONTENT_DATA" --pristine-zip "/content/data/pristine_heldout.zip" --out-csv "$unet_eval_csv"
 
 print("\\n================ Evaluating ResNetCorrNet ================")
-!python3 "$eval_script" --checkpoint "$corr_ckpt" --model corr --val-manifest "$val_csv" --data-dir "$CONTENT_DATA" --out-csv "$corr_eval_csv"
+!python3 "$eval_script" --checkpoint "$corr_ckpt" --model corr --val-manifest "$val_csv" --data-dir "$CONTENT_DATA" --pristine-zip "/content/data/pristine_heldout.zip" --out-csv "$corr_eval_csv"
 
 print("\\n================ Evaluating ResNetCorrNet (--ablate-corr) ================")
-!python3 "$eval_script" --checkpoint "$corr_ckpt" --model corr --ablate-corr --val-manifest "$val_csv" --data-dir "$CONTENT_DATA" --out-csv "$corr_abl_csv"
+!python3 "$eval_script" --checkpoint "$corr_ckpt" --model corr --ablate-corr --val-manifest "$val_csv" --data-dir "$CONTENT_DATA" --pristine-zip "/content/data/pristine_heldout.zip" --out-csv "$corr_abl_csv"
 
 # Build unified comparison table
 df_u = pd.read_csv(unet_eval_csv)
