@@ -275,6 +275,7 @@ else:
         "--data-dir", str(SYNTH_DIR),
         "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
         "--pristine-val-count", "1000",
+        "--save-every", "2",
         "--out-dir", str(unet_local_dir),
         "--drive-sync-dir", str(unet_drive_dir),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
@@ -307,6 +308,7 @@ else:
         "--data-dir", str(SYNTH_DIR),
         "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
         "--pristine-val-count", "1000",
+        "--save-every", "2",
         "--out-dir", str(corr_local_dir),
         "--drive-sync-dir", str(corr_drive_dir),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
@@ -344,6 +346,7 @@ if resume_ckpt.exists():
         "--data-dir", str(SYNTH_DIR),
         "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
         "--pristine-val-count", "1000",
+        "--save-every", "2",
         "--out-dir", str(local_resume_dir),
         "--drive-sync-dir", str(DRIVE_RUNS_DIR / f"{RESUME_MODEL}_run"),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
@@ -356,8 +359,42 @@ else:
 """
 cells.append(nbf.v4.new_code_cell(cell9_code))
 
-# Cell 10: Plot Cell
-cell10_code = """import pandas as pd
+# Cell 10: Diagnose False Alarms on CorrNet Checkpoints
+cell10_diag_code = """diag_script = DOPPEL_ROOT / "scripts" / "diagnose_fa.py"
+val_csv = SYNTH_DIR / "val_manifest.csv"
+pristine_zip = CONTENT_DATA / "pristine_heldout.zip"
+diag_out_dir = DRIVE_RUNS_DIR / "corr_run" / "diagnostics"
+diag_out_dir.mkdir(parents=True, exist_ok=True)
+
+for ckpt_name in ["last.pt", "best.pt"]:
+    ckpt_path = DRIVE_RUNS_DIR / "corr_run" / ckpt_name
+    if not ckpt_path.exists():
+        ckpt_path = Path(f"/content/runs/corr_run/{ckpt_name}")
+
+    if ckpt_path.exists():
+        print(f"\\n================ Running False Alarm Diagnostics on {ckpt_name} ================")
+        !python3 "$diag_script" \\
+            --checkpoint "$ckpt_path" \\
+            --model corr \\
+            --val-manifest "$val_csv" \\
+            --data-dir "$CONTENT_DATA" \\
+            --pristine-zip "$pristine_zip" \\
+            --pristine-subset 1000 \\
+            --out-dir "$diag_out_dir"
+    else:
+        print(f"[INFO] Checkpoint {ckpt_path} not found. Skipping {ckpt_name}.")
+
+# Display overlay figure of 12 worst clean panels
+worst_fig = diag_out_dir / "worst_clean_panels.png"
+if worst_fig.exists():
+    from IPython.display import Image, display
+    print("\\nOverlay figure of 12 worst clean panels:")
+    display(Image(filename=str(worst_fig)))
+"""
+cells.append(nbf.v4.new_code_cell(cell10_diag_code))
+
+# Cell 11: Plot Cell
+cell11_plot_code = """import pandas as pd
 import matplotlib.pyplot as plt
 
 unet_csv = DRIVE_RUNS_DIR / "unet_run" / "train_log.csv"
@@ -425,7 +462,7 @@ if unet_csv.exists() and corr_csv.exists():
 else:
     print("[WARNING] Log CSVs not found for both models. Ensure training has run.")
 """
-cells.append(nbf.v4.new_code_cell(cell10_code))
+cells.append(nbf.v4.new_code_cell(cell11_plot_code))
 
 # Cell 11: Final Evaluation Cell
 cell11_code = """eval_script = DOPPEL_ROOT / "scripts" / "eval_cnn.py"

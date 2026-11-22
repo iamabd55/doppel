@@ -45,6 +45,7 @@ from detector.cnn import (
     soft_dice_loss,
     sweep_thresholds,
 )
+from detector.cnn.infer import compute_top_k_mean, crop_to_original, filter_min_area
 from detector.colab_dataset import ColabDoppelDataset
 
 
@@ -135,19 +136,26 @@ def evaluate(
     pristine_panels: List[Tuple[np.ndarray, str]],
     device: torch.device,
     thresholds: Optional[List[float]] = None,
-    min_area: int = 50,
+    min_areas: Optional[List[int]] = None,
+    min_area: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Run full validation evaluation on uncropped validation panels and sweep thresholds.
+    """Run full validation evaluation on unpadded validation panels and sweep thresholds.
 
     Evaluates:
-      - Pixel F1 and MCC on forged panels.
-      - ROC AUC using image max predicted probability.
-      - False alarm rate on synthetic val clean twins.
-      - False alarm rate on fixed seeded subset of real pristine held-out panels.
-      - Sweeps thresholds to maximize recall subject to both FARs <= 1.0%.
+      - Predictions cropped strictly back to original unpadded dimensions.
+      - Image-level ROC AUC using mean of top-100 pixel probabilities per image.
+      - Grid sweep over tau {0.3, 0.5, 0.7, 0.9} x min_area {0, 25, 50, 100, 200, 400, 800}.
+      - False alarm rate on synthetic val clean twins and real pristine panels.
+      - Maximize recall subject to both FARs <= 1.0%.
     """
     if thresholds is None:
-        thresholds = [round(t, 2) for t in np.linspace(0.05, 0.95, 19).tolist()]
+        thresholds = [0.3, 0.5, 0.7, 0.9]
+
+    if min_areas is None:
+        if min_area is not None:
+            min_areas = [min_area]
+        else:
+            min_areas = [0, 25, 50, 100, 200, 400, 800]
 
     model.eval()
 
@@ -179,49 +187,69 @@ def evaluate(
             probs_np = probs[0, 0].cpu().numpy()
             mask_gt_np = (mask_gt[0, 0].cpu().numpy() > 0.5).astype(np.uint8)
 
-            valid_probs = probs_np[vm_bool]
-            max_prob = float(valid_probs.max()) if len(valid_probs) > 0 else 0.0
+            # Strict crop back to unpadded original resolution
+            ys, xs = np.where(vm_bool)
+            if len(ys) > 0 and len(xs) > 0:
+                top_y, bot_y = int(ys.min()), int(ys.max() + 1)
+                left_x, right_x = int(xs.min()), int(xs.max() + 1)
+            else:
+                top_y, bot_y = 0, probs_np.shape[0]
+                left_x, right_x = 0, probs_np.shape[1]
 
-            all_scores.append(max_prob)
+            probs_cropped = probs_np[top_y:bot_y, left_x:right_x]
+            mask_gt_cropped = mask_gt_np[top_y:bot_y, left_x:right_x]
+
+            max_prob = float(probs_cropped.max()) if probs_cropped.size > 0 else 0.0
+            top100_mean = compute_top_k_mean(probs_cropped, k=100)
+
+            all_scores.append(top100_mean)
             all_labels.append(1 if is_forged else 0)
 
-            rec: Dict[str, Any] = {"max_prob": max_prob}
+            rec: Dict[str, Any] = {"max_prob": max_prob, "top100_mean": top100_mean}
+
+            # Evaluate grid over tau and min_area
+            for tau in thresholds:
+                pred_bin = (probs_cropped >= tau).astype(np.uint8)
+                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                    pred_bin, connectivity=8
+                )
+                areas = stats[1:, cv2.CC_STAT_AREA] if num_labels > 1 else np.array([], dtype=int)
+
+                for area in min_areas:
+                    if is_forged:
+                        if area == 0:
+                            hit = bool(np.sum((pred_bin > 0) & (mask_gt_cropped > 0)) > 0)
+                        else:
+                            hit = False
+                            for lab_idx in range(1, num_labels):
+                                if stats[lab_idx, cv2.CC_STAT_AREA] >= area:
+                                    if np.sum((labels == lab_idx) & (mask_gt_cropped > 0)) > 0:
+                                        hit = True
+                                        break
+                        rec[f"detected_{tau}_{area}"] = hit
+                        rec[f"detected_{tau}"] = hit
+                    else:
+                        if area == 0:
+                            flagged = bool(np.sum(pred_bin) > 0)
+                        else:
+                            flagged = bool(len(areas) > 0 and np.any(areas >= area))
+                        rec[f"flagged_{tau}_{area}"] = flagged
+                        rec[f"flagged_{tau}"] = flagged
 
             if is_forged:
                 forged_total += 1
-                for tau in thresholds:
-                    if max_prob < tau:
-                        rec[f"detected_{tau}"] = False
-                    else:
-                        pred_bin = np.zeros_like(probs_np, dtype=np.uint8)
-                        pred_bin[(probs_np >= tau) & vm_bool] = 1
-                        pred_filt = filter_min_area(pred_bin, min_area=min_area)
-                        rec[f"detected_{tau}"] = bool(np.sum((pred_filt > 0) & (mask_gt_np > 0)) > 0)
+                # Pixel confusion at default threshold 0.5 and min_area 50 on unpadded cropped images
+                pred_bin_50 = (probs_cropped >= 0.5).astype(np.uint8)
+                pred_filt_50 = filter_min_area(pred_bin_50, min_area=50)
 
-                # Pixel confusion at default threshold 0.5
-                pred_bin_50 = np.zeros_like(probs_np, dtype=np.uint8)
-                pred_bin_50[(probs_np >= 0.5) & vm_bool] = 1
-                pred_filt_50 = filter_min_area(pred_bin_50, min_area=min_area)
-                p_valid = pred_filt_50[vm_bool]
-                g_valid = mask_gt_np[vm_bool]
-
-                forged_tp += int(np.sum((p_valid == 1) & (g_valid == 1)))
-                forged_fp += int(np.sum((p_valid == 1) & (g_valid == 0)))
-                forged_fn += int(np.sum((p_valid == 0) & (g_valid == 1)))
-                forged_tn += int(np.sum((p_valid == 0) & (g_valid == 0)))
+                forged_tp += int(np.sum((pred_filt_50 == 1) & (mask_gt_cropped == 1)))
+                forged_fp += int(np.sum((pred_filt_50 == 1) & (mask_gt_cropped == 0)))
+                forged_fn += int(np.sum((pred_filt_50 == 0) & (mask_gt_cropped == 1)))
+                forged_tn += int(np.sum((pred_filt_50 == 0) & (mask_gt_cropped == 0)))
 
                 forged_records.append(rec)
             else:
                 clean_total += 1
-                for tau in thresholds:
-                    if max_prob < tau:
-                        rec[f"flagged_{tau}"] = False
-                    else:
-                        pred_bin = np.zeros_like(probs_np, dtype=np.uint8)
-                        pred_bin[(probs_np >= tau) & vm_bool] = 1
-                        pred_filt = filter_min_area(pred_bin, min_area=min_area)
-                        rec[f"flagged_{tau}"] = bool(np.sum(pred_filt) > 0)
-
                 clean_records.append(rec)
 
     # Pixel metrics at 0.5
@@ -274,27 +302,34 @@ def evaluate(
                 logits = model(t_img, valid_mask=t_vm)
                 probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
-                valid_probs = probs[vm > 0]
-                max_prob = float(valid_probs.max()) if len(valid_probs) > 0 else 0.0
+                # Strict crop back to unpadded pristine resolution
+                probs_cropped = probs[top : top + h, left : left + w]
+                max_prob = float(probs_cropped.max()) if probs_cropped.size > 0 else 0.0
+                top100_mean = compute_top_k_mean(probs_cropped, k=100)
 
-                p_rec: Dict[str, Any] = {"max_prob": max_prob}
+                p_rec: Dict[str, Any] = {"max_prob": max_prob, "top100_mean": top100_mean}
                 for tau in thresholds:
-                    if max_prob < tau:
-                        p_rec[f"flagged_{tau}"] = False
-                    else:
-                        pred_bin = np.zeros_like(probs, dtype=np.uint8)
-                        pred_bin[(probs >= tau) & (vm > 0)] = 1
-                        pred_filt = filter_min_area(pred_bin, min_area=min_area)
-                        p_rec[f"flagged_{tau}"] = bool(np.sum(pred_filt) > 0)
+                    pred_bin = (probs_cropped >= tau).astype(np.uint8)
+                    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                        pred_bin, connectivity=8
+                    )
+                    areas = stats[1:, cv2.CC_STAT_AREA] if num_labels > 1 else np.array([], dtype=int)
+                    for area in min_areas:
+                        if area == 0:
+                            flagged = bool(np.sum(pred_bin) > 0)
+                        else:
+                            flagged = bool(len(areas) > 0 and np.any(areas >= area))
+                        p_rec[f"flagged_{tau}_{area}"] = flagged
+                        p_rec[f"flagged_{tau}"] = flagged
                 pristine_records.append(p_rec)
 
-    # Run threshold sweep to find optimal threshold within 1% FAR budget
+    # Run grid sweep to find optimal (tau, min_area) operating point within 1% FAR budget
     sweep_res = sweep_thresholds(
         forged_records,
         clean_records,
         pristine_records,
         thresholds=thresholds,
-        min_area=min_area,
+        min_areas=min_areas,
         max_far=0.01,
     )
 
@@ -304,6 +339,7 @@ def evaluate(
         "val_roc_auc": val_auc,
         "val_recall_budget": sweep_res["best_recall"],
         "val_thresh_budget": sweep_res["best_threshold"],
+        "val_area_budget": sweep_res["best_min_area"],
         "val_meets_budget": 1 if sweep_res["meets_budget"] else 0,
         "val_synth_clean_far": sweep_res["best_synth_far"],
         "val_pristine_far": sweep_res["best_pristine_far"],
@@ -334,6 +370,7 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision.")
     parser.add_argument("--ablate-corr", action="store_true", help="Ablate correlation channels at decoder input.")
     parser.add_argument("--time-budget-min", type=float, default=None, help="Stop training cleanly after this many elapsed minutes.")
+    parser.add_argument("--save-every", type=int, default=2, help="Save periodic checkpoint epoch_XX.pt every N epochs (default 2).")
     parser.add_argument("--drive-sync-dir", type=str, default=None, help="Directory to sync checkpoints and train_log.csv to after every epoch.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
     return parser.parse_args(args)
@@ -487,6 +524,7 @@ def main():
         "val_roc_auc",
         "val_recall_budget",
         "val_thresh_budget",
+        "val_area_budget",
         "val_meets_budget",
         "val_synth_clean_far",
         "val_pristine_far",
@@ -576,6 +614,7 @@ def main():
         val_auc = val_metrics["val_roc_auc"]
         val_rec_budget = val_metrics["val_recall_budget"]
         val_thresh_budget = val_metrics["val_thresh_budget"]
+        val_area_budget = val_metrics.get("val_area_budget", 0)
         val_meets_budget = bool(val_metrics["val_meets_budget"] == 1)
         synth_far = val_metrics["val_synth_clean_far"]
         pristine_far = val_metrics["val_pristine_far"]
@@ -584,7 +623,7 @@ def main():
             f"Epoch {epoch:3d}/{args.epochs:3d} | "
             f"Train Loss: {avg_loss:.4f} (F1: {train_f1:.4f}) | "
             f"Val F1: {val_f1:.4f} | AUC: {val_auc:.4f} | "
-            f"Rec@Budget: {val_rec_budget*100:.1f}% (tau={val_thresh_budget:.2f}, meets={val_meets_budget}) | "
+            f"Rec@Budget: {val_rec_budget*100:.1f}% (tau={val_thresh_budget:.2f}, area={val_area_budget}, meets={val_meets_budget}) | "
             f"SynthFAR: {synth_far*100:.2f}% | PristineFAR: {pristine_far*100:.2f}% | "
             f"({elapsed:.1f}s)"
         )
@@ -603,6 +642,7 @@ def main():
                 f"{val_auc:.4f}",
                 f"{val_rec_budget:.4f}",
                 f"{val_thresh_budget:.2f}",
+                val_area_budget,
                 1 if val_meets_budget else 0,
                 f"{synth_far:.6f}",
                 f"{pristine_far:.6f}",
@@ -625,11 +665,24 @@ def main():
         # Always save last.pt for resume
         torch.save(ckpt_state, out_dir / "last.pt")
 
+        # Periodic checkpoint saving
+        if args.save_every > 0 and (epoch % args.save_every == 0):
+            periodic_path = out_dir / f"epoch_{epoch:02d}.pt"
+            torch.save(ckpt_state, periodic_path)
+            if args.drive_sync_dir:
+                try:
+                    shutil.copy2(periodic_path, Path(args.drive_sync_dir) / f"epoch_{epoch:02d}.pt")
+                except Exception as e:
+                    print(f"  [WARNING] Failed to sync periodic checkpoint to Drive: {e}")
+            print(f"  --> Saved periodic checkpoint to {periodic_path.name}")
+
         # Select best checkpoint: recall at FAR <= 1% on pristine + synthetic clean, with ROC AUC as fallback
         current_checkpoint_eval = {
             "meets_budget": val_meets_budget,
             "recall": val_rec_budget,
             "roc_auc": val_auc,
+            "fallback_score": val_auc,
+            "best_min_area": val_area_budget,
             "epoch": epoch,
         }
 

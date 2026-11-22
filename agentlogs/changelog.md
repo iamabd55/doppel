@@ -281,3 +281,21 @@ All notable changes to the Doppel repository are documented here.
 - Added `tests/test_notebook_calls.py` with 4 AST and signature/argparse validation tests checking dataset kwargs and CLI commands for `train_cnn.py`, `eval_cnn.py`, and `select_threshold.py`.
 - Created `scripts/dryrun_notebook.py` executing notebook code cells 4, 5, and shortened 6 locally in a temporary directory on CPU with `--subset 16`, verifying end-to-end execution and per-epoch Drive synchronization.
 - Rebuilt `notebooks/phase4_train.ipynb` and `data/doppel_code.zip` (60 KB) with updated working tree contents. All 41 unit tests passed.
+
+### Fixed (Phase 4, False Alarm Diagnosis, Strict Spatial Cropping, and 2D Grid Selection)
+- Resolved 100% false alarm issue caused by padding boundary artifacts and single-pixel thresholding:
+  - Created `detector/cnn/infer.py` with `crop_to_original`, `pad_to_multiple`, `filter_min_area`, `compute_top_k_mean`, and `predict_mask`.
+  - Enforced strict cropping back to unpadded original resolution across `train_cnn.py`, `eval_cnn.py`, `select_threshold.py`, and `infer.py` before any thresholding, component filtering, or pixel confusion calculation.
+  - Added unit test `test_padded_strip_negative_and_cropping` in `tests/test_cnn_models.py` verifying that high activations confined to padded borders produce an image-level negative.
+- Upgraded validation selection in `detector/cnn/selection.py` and `scripts/train_cnn.py`:
+  - Implemented 2D grid sweep covering tau in {0.3, 0.5, 0.7, 0.9} x min_area in {0, 25, 50, 100, 200, 400, 800} to maximize recall subject to FAR <= 1.0% on both synthetic clean twins and real pristine panels.
+  - Replaced single max pixel scoring with the mean of the top-100 pixel probabilities per image for ROC AUC calculation and fallback checkpoint selection.
+  - Added `--save-every N` (default 2) to `scripts/train_cnn.py` writing `epoch_XX.pt` periodic checkpoints and syncing to Drive.
+- Created `scripts/diagnose_fa.py`:
+  - Evaluates model checkpoints on synthetic clean twins (500) and 1,000 seeded pristine panels.
+  - Reports max probability, predicted area at tau in {0.5, 0.7, 0.9}, and distance from max-prob pixel to nearest image edge.
+  - Prints FAR and recall grids with Wilson 95% confidence intervals and reports false alarms disappearing when excluding pixels within 8 px of the edge.
+  - Generates overlay figure of the 12 worst clean panels saved to disk.
+- Added diagnostic cell to `notebooks/phase4_train.ipynb` running `diagnose_fa.py` on `last.pt` and `best.pt`.
+- Extended `scripts/dryrun_notebook.py` to execute `diagnose_fa.py` on CPU. All 5 dry-run steps passed end-to-end.
+- Rebuilt `data/doppel_code.zip` (72 KB). All 44 unit tests passing.

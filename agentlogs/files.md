@@ -33,15 +33,17 @@ Summary of files in the Doppel repository:
 - `detector/sift/localization.py`: Binary mask generation via per-cluster convex hull and keypoint dilation (`create_sift_mask`), and configurable end-to-end detection pipeline (`detect_sift`).
 
 ### CNN Detection Subpackage (`detector/cnn/`)
-- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet, ResNetCorrNet, loss functions, and checkpoint selection utilities.
+- `detector/cnn/__init__.py`: Package initialization exporting ResNetUNet, ResNetCorrNet, loss functions, inference utilities, and checkpoint selection logic.
 - `detector/cnn/unet.py`: Baseline ResNet-18 U-Net segmentation network with ImageNet pretraining, multi-scale skip connections, and native resolution mask logits.
 - `detector/cnn/corr_net.py`: Copy-move correlation network with ResNet-18 backbone, stride-8 feature self-correlation module with 128-d projection, Chebyshev spatial self-mask, zero-pad valid-mask filtering, top-4 match extraction, multi-scale skip decoder, and `--ablate-corr` support.
 - `detector/cnn/loss.py`: Loss modules for CNN training, including `soft_dice_loss` (filtering clean samples) and `CombinedBCEDiceLoss`.
-- `detector/cnn/selection.py`: Validation threshold sweep and checkpoint selection logic (`sweep_thresholds`, `is_better_checkpoint`) prioritizing recall at <= 1% FAR with ROC AUC fallback.
+- `detector/cnn/infer.py`: Inference and spatial cropping utilities (`pad_to_multiple`, `crop_to_original`, `filter_min_area`, `compute_top_k_mean`, `predict_mask`, `predict_from_probs`) ensuring predictions are strictly unpadded before decision or metric computation.
+- `detector/cnn/selection.py`: Validation threshold and area sweep and checkpoint selection logic (`sweep_thresholds`, `is_better_checkpoint`) prioritizing recall at <= 1% FAR over a 2D (tau x min_area) grid with top-100 mean ROC AUC fallback.
 
 ## Evaluation and Utility Scripts (`scripts/`)
 - `scripts/build_phase4_notebook.py`: Generator script that uses `nbformat` to construct `notebooks/phase4_train.ipynb`.
-- `scripts/dryrun_notebook.py`: End-to-end local dry-run script executing notebook code cells 4, 5, and shortened 6 in a temporary directory on CPU with `--subset 16` and verifying Drive syncing.
+- `scripts/diagnose_fa.py`: False alarm diagnostic tool evaluating max probability, distance to edge, 2D grid FAR/recall with Wilson CIs, edge margin reduction, and overlay figures of worst clean panels.
+- `scripts/dryrun_notebook.py`: End-to-end local dry-run script executing notebook code cells 4, 5, shortened 6, and diagnose_fa in a temporary directory on CPU with `--subset 16` and verifying Drive syncing.
 - `scripts/select_threshold.py`: Step D threshold selection script optimizing (pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels subject to FAR <= 1.0% budgets.
 - `scripts/eval_cnn.py`: Detailed validation and ablation evaluation script breaking down performance by class, tier, transform type, copy count, and patch area, with `--ablate-corr` support.
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.

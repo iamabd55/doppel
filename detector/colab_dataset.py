@@ -75,7 +75,7 @@ class ColabDoppelDataset(Dataset):
 
     def _pad_to_multiple(
         self, img: np.ndarray, mask: np.ndarray, valid_mask: np.ndarray, multiple: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
         """Zero-pad image, mask and valid_mask to next multiple of multiple (e.g. 32). Never resizes."""
         h, w = img.shape[:2]
         target_h = int(np.ceil(h / multiple) * multiple)
@@ -85,7 +85,7 @@ class ColabDoppelDataset(Dataset):
         pad_w = target_w - w
 
         if pad_h == 0 and pad_w == 0:
-            return img, mask, valid_mask
+            return img, mask, valid_mask, (0, 0, 0, 0)
 
         top = pad_h // 2
         bottom = pad_h - top
@@ -99,7 +99,7 @@ class ColabDoppelDataset(Dataset):
 
         padded_mask = cv2.copyMakeBorder(mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
         padded_vm = cv2.copyMakeBorder(valid_mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-        return padded_img, padded_mask, padded_vm
+        return padded_img, padded_mask, padded_vm, (top, bottom, left, right)
 
     def _crop_pair(
         self,
@@ -247,7 +247,9 @@ class ColabDoppelDataset(Dataset):
             mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
         # Valid mask: initially all 1s (unpadded)
-        valid_mask = np.ones(img.shape[:2], dtype=np.uint8)
+        orig_h, orig_w = img.shape[:2]
+        valid_mask = np.ones((orig_h, orig_w), dtype=np.uint8)
+        pad_box = (0, 0, 0, 0)
 
         # 1. Cropping or padding:
         # Train uses random crops (with 50% positive coverage); Val always returns full image with padding only
@@ -257,7 +259,7 @@ class ColabDoppelDataset(Dataset):
                 img, mask, valid_mask, self.crop_size[0], self.crop_size[1], is_forged, rng=crop_rng
             )
         elif self.pad_multiple > 1:
-            img, mask, valid_mask = self._pad_to_multiple(
+            img, mask, valid_mask, pad_box = self._pad_to_multiple(
                 img, mask, valid_mask, self.pad_multiple
             )
 
@@ -282,6 +284,12 @@ class ColabDoppelDataset(Dataset):
             "is_forged": is_forged,
             "degradation_level": row.get("degradation_level", "zero"),
             "transform_type": row.get("transform_type", "none"),
+            "orig_h": orig_h,
+            "orig_w": orig_w,
+            "pad_top": pad_box[0],
+            "pad_bottom": pad_box[1],
+            "pad_left": pad_box[2],
+            "pad_right": pad_box[3],
         }
 
         try:

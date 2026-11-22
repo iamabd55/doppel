@@ -255,20 +255,32 @@ def main():
             probs_np = probs[0, 0].cpu().numpy()
             mask_gt_np = (mask_gt[0, 0].cpu().numpy() > 0.5).astype(np.uint8)
 
-            pred_bin = np.zeros_like(probs_np, dtype=np.uint8)
-            pred_bin[(probs_np >= args.threshold) & vm_bool] = 1
+            # Strict crop back to unpadded original resolution
+            ys, xs = np.where(vm_bool)
+            if len(ys) > 0 and len(xs) > 0:
+                top_y, bot_y = int(ys.min()), int(ys.max() + 1)
+                left_x, right_x = int(xs.min()), int(xs.max() + 1)
+            else:
+                top_y, bot_y = 0, probs_np.shape[0]
+                left_x, right_x = 0, probs_np.shape[1]
+
+            probs_cropped = probs_np[top_y:bot_y, left_x:right_x]
+            mask_gt_cropped = mask_gt_np[top_y:bot_y, left_x:right_x]
+
+            pred_bin = (probs_cropped >= args.threshold).astype(np.uint8)
             pred_filt = filter_min_area(pred_bin, min_area=args.min_area)
 
             detected_any = bool(np.sum(pred_filt) > 0)
-            detected_overlap = bool(np.sum((pred_filt > 0) & (mask_gt_np > 0)) > 0) if is_forged else False
+            detected_overlap = (
+                bool(np.sum((pred_filt > 0) & (mask_gt_cropped > 0)) > 0)
+                if is_forged
+                else False
+            )
 
-            p_valid = pred_filt[vm_bool]
-            g_valid = mask_gt_np[vm_bool]
-
-            tp = int(np.sum((p_valid == 1) & (g_valid == 1)))
-            fp = int(np.sum((p_valid == 1) & (g_valid == 0)))
-            fn = int(np.sum((p_valid == 0) & (g_valid == 1)))
-            tn = int(np.sum((p_valid == 0) & (g_valid == 0)))
+            tp = int(np.sum((pred_filt == 1) & (mask_gt_cropped == 1)))
+            fp = int(np.sum((pred_filt == 1) & (mask_gt_cropped == 0)))
+            fn = int(np.sum((pred_filt == 0) & (mask_gt_cropped == 1)))
+            tn = int(np.sum((pred_filt == 0) & (mask_gt_cropped == 0)))
 
             try:
                 patch_area = float(meta.get("patch_area", 0.0))

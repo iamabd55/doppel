@@ -90,3 +90,56 @@ def test_sweep_thresholds_selection():
     assert res["best_recall"] == 0.75
     assert res["best_synth_far"] == 0.01
     assert res["best_pristine_far"] == 0.01
+
+
+def test_sweep_thresholds_2d_grid():
+    """Verify 2D grid sweep finds optimal (tau, min_area) operating point within budget."""
+    thresholds = [0.3, 0.5, 0.7]
+    min_areas = [0, 50, 100]
+
+    synth_clean = []
+    pristine = []
+    forged = []
+
+    # Suppose at min_area=0, tau=0.5 has 5/100 FAR (fails).
+    # But at min_area=50, tau=0.5 drops to 1/100 FAR (passes) and yields recall 0.70.
+    for i in range(100):
+        c_rec = {}
+        p_rec = {}
+        f_rec = {}
+        for tau in thresholds:
+            for area in min_areas:
+                if area == 0:
+                    c_rec[f"flagged_{tau}_{area}"] = (i < 5) if tau <= 0.5 else (i < 2)
+                    p_rec[f"flagged_{tau}_{area}"] = (i < 4) if tau <= 0.5 else (i < 2)
+                else:
+                    c_rec[f"flagged_{tau}_{area}"] = (i < 1) if tau >= 0.5 else (i < 3)
+                    p_rec[f"flagged_{tau}_{area}"] = (i < 1) if tau >= 0.5 else (i < 3)
+
+                if tau == 0.5 and area == 50:
+                    f_rec[f"detected_{tau}_{area}"] = (i < 70)
+                elif tau == 0.7 and area == 50:
+                    f_rec[f"detected_{tau}_{area}"] = (i < 50)
+                else:
+                    f_rec[f"detected_{tau}_{area}"] = (i < 40)
+
+        synth_clean.append(c_rec)
+        pristine.append(p_rec)
+        forged.append(f_rec)
+
+    res = sweep_thresholds(
+        forged,
+        synth_clean,
+        pristine,
+        thresholds=thresholds,
+        min_areas=min_areas,
+        max_far=0.01,
+    )
+
+    assert res["meets_budget"] is True
+    assert res["best_threshold"] == 0.5
+    assert res["best_min_area"] == 50
+    assert res["best_recall"] == 0.70
+    assert res["best_synth_far"] <= 0.01
+    assert res["best_pristine_far"] <= 0.01
+

@@ -155,12 +155,23 @@ def main():
             probs_np = probs[0, 0].cpu().numpy()
             mask_gt_np = (mask_gt[0, 0].cpu().numpy() > 0.5).astype(np.uint8)
 
+            # Strict crop back to unpadded resolution
+            ys, xs = np.where(vm_bool)
+            if len(ys) > 0 and len(xs) > 0:
+                top_y, bot_y = int(ys.min()), int(ys.max() + 1)
+                left_x, right_x = int(xs.min()), int(xs.max() + 1)
+            else:
+                top_y, bot_y = 0, probs_np.shape[0]
+                left_x, right_x = 0, probs_np.shape[1]
+
+            probs_cropped = probs_np[top_y:bot_y, left_x:right_x]
+            mask_gt_cropped = mask_gt_np[top_y:bot_y, left_x:right_x]
+
             val_preds.append({
                 "is_forged": is_forged,
-                "probs": probs_np,
-                "vm": vm_bool,
-                "mask_gt": mask_gt_np,
-                "max_p": float(probs_np[vm_bool].max()) if np.any(vm_bool) else 0.0,
+                "probs": probs_cropped,
+                "mask_gt": mask_gt_cropped,
+                "max_p": float(probs_cropped.max()) if probs_cropped.size > 0 else 0.0,
             })
 
     # 2. Compute prediction probability maps for pristine held-out panels
@@ -195,12 +206,12 @@ def main():
                 logits = model(t_img, valid_mask=t_vm)
                 probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
-                vm_bool = vm > 0
-                max_p = float(probs[vm_bool].max()) if np.any(vm_bool) else 0.0
+                # Strict crop back to unpadded pristine panel resolution
+                probs_cropped = probs[top : top + h, left : left + w]
+                max_p = float(probs_cropped.max()) if probs_cropped.size > 0 else 0.0
 
                 pristine_preds.append({
-                    "probs": probs,
-                    "vm": vm_bool,
+                    "probs": probs_cropped,
                     "max_p": max_p,
                 })
 
@@ -227,8 +238,7 @@ def main():
             clean_flags = 0
             for item in clean_items:
                 if item["max_p"] >= tau:
-                    pred_bin = np.zeros_like(item["probs"], dtype=np.uint8)
-                    pred_bin[(item["probs"] >= tau) & item["vm"]] = 1
+                    pred_bin = (item["probs"] >= tau).astype(np.uint8)
                     filt = filter_min_area(pred_bin, min_area=min_area)
                     if np.sum(filt) > 0:
                         clean_flags += 1
@@ -239,8 +249,7 @@ def main():
             if n_pristine > 0:
                 for item in pristine_preds:
                     if item["max_p"] >= tau:
-                        pred_bin = np.zeros_like(item["probs"], dtype=np.uint8)
-                        pred_bin[(item["probs"] >= tau) & item["vm"]] = 1
+                        pred_bin = (item["probs"] >= tau).astype(np.uint8)
                         filt = filter_min_area(pred_bin, min_area=min_area)
                         if np.sum(filt) > 0:
                             pristine_flags += 1
@@ -254,8 +263,7 @@ def main():
             forged_hits = 0
             for item in forged_items:
                 if item["max_p"] >= tau:
-                    pred_bin = np.zeros_like(item["probs"], dtype=np.uint8)
-                    pred_bin[(item["probs"] >= tau) & item["vm"]] = 1
+                    pred_bin = (item["probs"] >= tau).astype(np.uint8)
                     filt = filter_min_area(pred_bin, min_area=min_area)
                     if np.sum((filt > 0) & (item["mask_gt"] > 0)) > 0:
                         forged_hits += 1

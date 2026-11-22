@@ -8,7 +8,7 @@ import nbformat
 import pytest
 
 from detector.colab_dataset import ColabDoppelDataset
-from scripts import eval_cnn, select_threshold, train_cnn
+from scripts import diagnose_fa, eval_cnn, select_threshold, train_cnn
 
 NOTEBOOK_PATH = Path(__file__).resolve().parent.parent / "notebooks" / "phase4_train.ipynb"
 
@@ -186,3 +186,45 @@ def test_select_threshold_command_args():
             assert parsed.checkpoint == "dummy_val"
         except SystemExit as e:
             pytest.fail(f"Cell {cell_idx} select_threshold command failed parse_args with error: {e}")
+
+
+def test_diagnose_fa_command_args():
+    """Verify all diagnose_fa.py shell commands in notebook parse successfully."""
+    nb = _load_notebook()
+    diag_cmds = []
+
+    for idx, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        lines = cell.source.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith("!python3"):
+                cmd_str = line[len("!python3"):].strip()
+                while cmd_str.endswith("\\") and i + 1 < len(lines):
+                    i += 1
+                    cmd_str = cmd_str[:-1].strip() + " " + lines[i].strip()
+                tokens = shlex.split(cmd_str)
+                if tokens and "diag_script" in tokens[0]:
+                    args = []
+                    for t in tokens[1:]:
+                        if t.startswith("$") or t.startswith("/content"):
+                            if args and args[-1] == "--model":
+                                args.append("corr")
+                            else:
+                                args.append("dummy_val")
+                        else:
+                            args.append(t)
+                    diag_cmds.append((idx, args))
+            i += 1
+
+    assert len(diag_cmds) >= 1, "Expected diagnose_fa call in notebook."
+
+    for cell_idx, args in diag_cmds:
+        try:
+            parsed = diagnose_fa.parse_args(args)
+            assert parsed.checkpoint == "dummy_val"
+        except SystemExit as e:
+            pytest.fail(f"Cell {cell_idx} diagnose_fa command failed parse_args with error: {e}")
+

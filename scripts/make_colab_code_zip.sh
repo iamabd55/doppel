@@ -20,7 +20,7 @@ with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(Path(base).rglob('*')):
             if p.is_file() and not any(part.startswith('.') or part == '__pycache__' for part in p.parts):
                 zf.write(p, f'doppel/{p}')
-    for extra in ['pyproject.toml', 'docs/phase4_targets.md', 'scripts/train_cnn.py', 'scripts/eval_cnn.py', 'scripts/select_threshold.py']:
+    for extra in ['pyproject.toml', 'docs/phase4_targets.md', 'scripts/train_cnn.py', 'scripts/eval_cnn.py', 'scripts/select_threshold.py', 'scripts/diagnose_fa.py']:
         p = Path(extra)
         if p.is_file():
             zf.write(p, f'doppel/{p}')

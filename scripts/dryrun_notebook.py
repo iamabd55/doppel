@@ -60,15 +60,21 @@ def main():
         synth_dir.mkdir(parents=True, exist_ok=True)
 
         # 2. Simulate Cell 2 and Cell 3: copy zips to fake Drive, then copy to content and unpack
-        print("\n[STEP 1/4] Simulating Drive copy and content unpacking (Cells 2 & 3)...")
-        shutil.copy2(zips["synth"], fake_drive / "synthetic_dataset.zip")
-        shutil.copy2(zips["pristine"], fake_drive / "pristine_heldout.zip")
-        shutil.copy2(zips["code"], fake_drive / "doppel_code.zip")
+        print("\n[STEP 1/5] Simulating Drive copy and content unpacking (Cells 2 & 3)...")
+        def _safe_link_or_copy(src, dst):
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+
+        _safe_link_or_copy(zips["synth"], fake_drive / "synthetic_dataset.zip")
+        _safe_link_or_copy(zips["pristine"], fake_drive / "pristine_heldout.zip")
+        _safe_link_or_copy(zips["code"], fake_drive / "doppel_code.zip")
 
         # Copy from fake Drive to content
-        shutil.copy2(fake_drive / "synthetic_dataset.zip", content_data / "synthetic_dataset.zip")
-        shutil.copy2(fake_drive / "pristine_heldout.zip", content_data / "pristine_heldout.zip")
-        shutil.copy2(fake_drive / "doppel_code.zip", content_dir / "doppel_code.zip")
+        _safe_link_or_copy(fake_drive / "synthetic_dataset.zip", content_data / "synthetic_dataset.zip")
+        _safe_link_or_copy(fake_drive / "pristine_heldout.zip", content_data / "pristine_heldout.zip")
+        _safe_link_or_copy(fake_drive / "doppel_code.zip", content_dir / "doppel_code.zip")
 
         # Unpack doppel_code.zip to content
         with zipfile.ZipFile(content_dir / "doppel_code.zip", "r") as zf:
@@ -186,6 +192,32 @@ def main():
         assert (overfit_drive_sync / "last.pt").exists(), "Missing synced overfit last.pt on fake Drive"
         assert (overfit_drive_sync / "train_log.csv").exists(), "Missing synced overfit train_log.csv on fake Drive"
         print(f"[PASS] Overfit test call passed in {elapsed_of:.1f}s. Drive sync verified.")
+
+        # 6. Simulate Diagnostic Cell: diagnose_fa.py on last.pt
+        print("\n[STEP 5/5] Executing False Alarm Diagnostic Cell (diagnose_fa.py)...")
+        diag_out = content_dir / "diag_corr"
+        cmd_diag = [
+            sys.executable,
+            str(doppel_root / "scripts" / "diagnose_fa.py"),
+            "--checkpoint", str(content_dir / "smoke_corr" / "last.pt"),
+            "--model", "corr",
+            "--val-manifest", str(val_manifest),
+            "--val-subset", "16",
+            "--data-dir", str(content_data),
+            "--pristine-zip", str(content_data / "pristine_heldout.zip"),
+            "--pristine-subset", "10",
+            "--out-dir", str(diag_out),
+            "--device", "cpu",
+        ]
+        t0 = time.time()
+        res_diag = subprocess.run(cmd_diag, capture_output=True, text=True)
+        elapsed_diag = time.time() - t0
+        if res_diag.returncode != 0:
+            print(f"[FAIL] diagnose_fa.py call failed:\nSTDOUT:\n{res_diag.stdout}\nSTDERR:\n{res_diag.stderr}")
+            sys.exit(1)
+
+        assert (diag_out / "worst_clean_panels.png").exists(), "Missing worst_clean_panels.png from diagnostics"
+        print(f"[PASS] False alarm diagnostics passed in {elapsed_diag:.1f}s. Overlay figure generated.")
 
     print("\n======================================================================")
     print("ALL DRY-RUN TESTS PASSED SUCCESSFULLY END-TO-END")
