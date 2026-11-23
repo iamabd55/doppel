@@ -39,6 +39,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from detector.detect import detect
 from detector.sift import detect_sift
 from detector.cnn import predict_cnn, load_cnn_model
+from detector.fusion import fuse
 
 
 def parse_args() -> argparse.Namespace:
@@ -441,6 +442,16 @@ def run_benchmark_synthetic(
                 "cnn_f1": round(f1, 4),
             })
 
+        # Multi-detector fusion (call detector/fusion.py)
+        if "cnn_flagged" in record:
+            fusion_res = fuse(
+                dct_out={"flagged": record.get("ad_dct_flagged", False), "regions": []},
+                sift_out={"flagged": record.get("sift_flagged", False), "regions": []},
+                cnn_out={"flagged": record.get("cnn_flagged", False), "regions": []},
+            )
+            record["fusion_tier"] = fusion_res.tier
+            record["fusion_detectors"] = "+".join(fusion_res.detectors_fired)
+
         records.append(record)
 
         if (idx + 1) % 50 == 0 or (idx + 1) == len(df):
@@ -563,6 +574,16 @@ def run_benchmark_biofors(
                 "sift_f1": round(f1, 4),
             })
 
+        # Multi-detector fusion (call detector/fusion.py)
+        if "cnn_flagged" in record:
+            fusion_res = fuse(
+                dct_out={"flagged": record.get("ad_dct_flagged", False), "regions": []},
+                sift_out={"flagged": record.get("sift_flagged", False), "regions": []},
+                cnn_out={"flagged": record.get("cnn_flagged", False), "regions": []},
+            )
+            record["fusion_tier"] = fusion_res.tier
+            record["fusion_detectors"] = "+".join(fusion_res.detectors_fired)
+
         records.append(record)
 
         if (idx + 1) % 250 == 0 or (idx + 1) == len(manifest_df):
@@ -656,6 +677,16 @@ def run_pristine_train_audit(
                 check_flip=True,
             )
             record["sift_flagged"] = bool((sift_mask > 0).any())
+
+        # Multi-detector fusion (call detector/fusion.py)
+        if "cnn_flagged" in record:
+            fusion_res = fuse(
+                dct_out={"flagged": record.get("ad_dct_flagged", False), "regions": []},
+                sift_out={"flagged": record.get("sift_flagged", False), "regions": []},
+                cnn_out={"flagged": record.get("cnn_flagged", False), "regions": []},
+            )
+            record["fusion_tier"] = fusion_res.tier
+            record["fusion_detectors"] = "+".join(fusion_res.detectors_fired)
 
         records.append(record)
 
@@ -926,14 +957,26 @@ def generate_summary_markdown(
         fa_s = c_synth["sift_flagged"]
         fa_cnn = c_synth["cnn_flagged"]
 
-        num_agree_f = hit_cnn.astype(int) + hit_da.astype(int) + hit_s.astype(int)
-        num_agree_c = fa_cnn.astype(int) + fa_da.astype(int) + fa_s.astype(int)
+        f_tiers = [fuse(da, s, c).tier for da, s, c in zip(hit_da, hit_s, hit_cnn)]
+        c_tiers = [fuse(da, s, c).tier for da, s, c in zip(fa_da, fa_s, fa_cnn)]
+
+        tier_high_f = np.array([t == "high" for t in f_tiers])
+        tier_high_c = np.array([t == "high" for t in c_tiers])
+
+        tier_med_f = np.array([t == "medium" for t in f_tiers])
+        tier_med_c = np.array([t == "medium" for t in c_tiers])
+
+        tier_low_f = np.array([t == "low" for t in f_tiers])
+        tier_low_c = np.array([t == "low" for t in c_tiers])
+
+        tier_or_f = np.array([t != "none" for t in f_tiers])
+        tier_or_c = np.array([t != "none" for t in c_tiers])
 
         synth_fusion_combos = [
-            ("High Confidence (2+ Detectors Agree)", "At least 2 of CNN, Adapted DCT, SIFT agree", num_agree_f >= 2, num_agree_c >= 2),
-            ("Medium Confidence (CNN Only)", "CNN flags, DCT and SIFT silent", hit_cnn & (~hit_da) & (~hit_s), fa_cnn & (~fa_da) & (~fa_s)),
-            ("Low Confidence (Classical Only)", "Adapted DCT or SIFT flags, CNN silent", (hit_da | hit_s) & (~hit_cnn), (fa_da | fa_s) & (~fa_cnn)),
-            ("Combined OR Fusion (Any Detector)", "CNN OR Adapted DCT OR SIFT", hit_cnn | hit_da | hit_s, fa_cnn | fa_da | fa_s),
+            ("High Confidence (2+ Detectors Agree)", "At least 2 of CNN, Adapted DCT, SIFT agree (fuse == 'high')", tier_high_f, tier_high_c),
+            ("Medium Confidence (CNN Only)", "CNN flags, DCT and SIFT silent (fuse == 'medium')", tier_med_f, tier_med_c),
+            ("Low Confidence (Single Classical Detector)", "Exactly one of DCT or SIFT flags, CNN silent (fuse == 'low')", tier_low_f, tier_low_c),
+            ("Combined OR Fusion (Any Detector)", "CNN OR Adapted DCT OR SIFT (fuse != 'none')", tier_or_f, tier_or_c),
             ("Pairwise: CNN AND Adapted DCT", "Both CNN and Adapted DCT agree", hit_cnn & hit_da, fa_cnn & fa_da),
             ("Pairwise: CNN AND Frozen SIFT", "Both CNN and SIFT agree", hit_cnn & hit_s, fa_cnn & fa_s),
             ("Pairwise: Adapted DCT AND SIFT", "Both Adapted DCT and SIFT agree", hit_da & hit_s, fa_da & fa_s),

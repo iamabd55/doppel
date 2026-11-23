@@ -427,5 +427,19 @@ All notable changes to the Doppel repository are documented here.
     - Combined OR Fusion: 71.7% recall, 2.67% clean FAR, 96.4% precision (215/223).
 - Test set touch discipline preserved: real BioFors IDD test set touches strictly remain at 0 / 1.
 
+### Added and Verified (Part A: Standardized Fusion Module and Unit Tests)
+- Implemented `detector/fusion.py`:
+  - Defined `fuse(dct_out, sift_out, cnn_out)` returning `FusionResult(tier, detectors_fired, regions_per_detector)`.
+  - Implemented exact rules:
+    - `high`: 2 or more of (adapted DCT, frozen SIFT, CNN) flag the panel.
+    - `medium`: CNN only flags the panel (DCT and SIFT silent).
+    - `low`: exactly one of DCT or SIFT flags the panel and not CNN.
+    - `none`: no detector flags the panel.
+  - Robust parser supporting booleans, dicts, tuples, and numpy masks with automatic connected-component bounding box extraction.
+- Exported in `detector/__init__.py`.
+- Integrated into `scripts/benchmark.py` across synthetic evaluation and summary reporting.
+- Created `tests/test_fusion.py` validating all tiers, unpacking, edge cases, and complex outputs (8 tests). All 67 repository tests pass.
+- Verified synthetic test results remain strictly identical before and after.
+
 
 

@@ -22,6 +22,7 @@ Summary of files in the Doppel repository:
 - `detector/detect.py`: Top-level detection pipeline. Orchestrates feature extraction, lexicographic matching, shift vector voting, block painting, morphological closing, and small component removal.
 - `detector/features.py`: Feature extraction using sliding-window 8x8 block decomposition, standard deviation texture filtering, 2D orthonormal DCT, zigzag coefficient ordering, and quantization.
 - `detector/matching.py`: Candidate matching via lexicographic sorting (`np.lexsort`), neighbor window search, Euclidean distance thresholding, and canonical shift vector orientation.
+- `detector/fusion.py`: Multi-detector decision fusion module implementing standardized confidence tiers (`high`, `medium`, `low`, `none`), detectors_fired reporting, and per-detector bounding box aggregation.
 - `detector/evaluate.py`: Evaluation utilities computing pixel-level true positives, false positives, false negatives, precision, recall, and F1 score against ground truth masks.
 - `detector/synthetic.py`: Synthetic copy-move generator supporting realistic transformations, post-processing degradations, narrow Western blot strip handling, log-uniform area sampling with 400 px floor, multi-copy support, and BioFors IDD mask conventions (_F, _M, _S, _A, and metadata).
 - `detector/colab_dataset.py`: PyTorch Dataset implementation for Google Colab training. Supports partner-guaranteed cropping (expanding crops up to 512 px to capture both source and target pairs, masking orphaned regions), batch-level dynamic padding collate function (`colab_collate_fn`), joint geometric augmentations, and document-level split disjointness assertions.
@@ -84,6 +85,7 @@ Summary of files in the Doppel repository:
 - `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, AMP fp16 compatibility, and `--ablate-corr` correlation ablation.
 - `tests/test_dice_loss.py`: Unit tests for soft Dice loss ensuring clean twins are excluded from Dice calculations, mixed perfect predictions yield near-zero loss, all-zero predictions yield high loss, and clean samples contribute zero gradient.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.
+- `tests/test_fusion.py`: Unit tests validating all four confidence tiers (`high`, `medium`, `low`, `none`), edge cases, output unpacking, mask-based region extraction, and complex detector output handling.
 - `tests/test_notebook_calls.py`: AST and inspect/argparse validation tests ensuring notebook code cells use valid signatures and CLI parameters.
 - `tests/test_synthetic.py`: Unit tests validating synthetic copy-move generator invariants, mask union identities, determinism, narrow blot strips, and document split disjointness.
 - `tests/test_colab_dataset.py`: Unit tests verifying ColabDoppelDataset PyTorch batch loading, shapes, dtypes, forged fraction, mask coverage, val padding, and split disjointness.
