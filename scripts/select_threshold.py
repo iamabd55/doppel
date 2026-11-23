@@ -245,9 +245,9 @@ def main():
     print(f"[INFO] Val counts: {n_forged} forged, {n_clean} clean twins, {n_pristine} pristine panels.")
 
     # 3. Grid search over image_thresholds (if present), thresholds, and min_area
-    candidate_s = [0.0, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95] if has_image_head else [0.0]
-    candidate_thresholds = [round(t, 2) for t in np.linspace(0.10, 0.90, 17)]
-    candidate_areas = [32, 50, 64, 100, 150, 200, 300, 500]
+    candidate_s = [0.0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99] if has_image_head else [0.0]
+    candidate_thresholds = [round(t, 2) for t in np.linspace(0.10, 0.95, 18)]
+    candidate_areas = [25, 32, 50, 64, 100, 150, 200, 300, 400, 500, 800, 1200, 1600]
 
     best_config: Optional[Dict[str, Any]] = None
     best_recall = -1.0
@@ -285,9 +285,6 @@ def main():
                 else:
                     pristine_far = 0.0
 
-                meets = (clean_far <= args.max_far) and (pristine_far <= args.max_far)
-                cur_max_far = max(clean_far, pristine_far)
-
                 # Forged recall
                 forged_hits = 0
                 for item in forged_items:
@@ -298,6 +295,10 @@ def main():
                         if np.sum((filt > 0) & (item["mask_gt"] > 0)) > 0:
                             forged_hits += 1
                 recall = forged_hits / n_forged if n_forged > 0 else 0.0
+
+                # Strict requirement: meets budget ONLY IF recall > 0 and FAR <= max_far on both sets
+                meets = (clean_far <= args.max_far) and (pristine_far <= args.max_far) and (recall > 1e-5)
+                cur_max_far = max(clean_far, pristine_far)
 
                 entry = {
                     "image_threshold": s,
@@ -315,12 +316,13 @@ def main():
                         best_recall = recall
                         best_config = entry
                 else:
-                    if cur_max_far < lowest_max_far - 1e-5:
-                        lowest_max_far = cur_max_far
-                        fallback_config = entry
-                    elif abs(cur_max_far - lowest_max_far) <= 1e-5:
-                        if (clean_far + pristine_far) < (fallback_config["clean_far"] + fallback_config["pristine_far"]):
+                    if recall > 1e-5:
+                        if cur_max_far < lowest_max_far - 1e-5:
+                            lowest_max_far = cur_max_far
                             fallback_config = entry
+                        elif abs(cur_max_far - lowest_max_far) <= 1e-5:
+                            if fallback_config is None or (clean_far + pristine_far) < (fallback_config["clean_far"] + fallback_config["pristine_far"]):
+                                fallback_config = entry
 
     # Fallback if no configuration met the strict budget
     if best_config is None:

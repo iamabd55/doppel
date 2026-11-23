@@ -324,3 +324,24 @@ All notable changes to the Doppel repository are documented here.
   - Extended `scripts/dryrun_notebook.py` to 7 steps (loader check, smoke test, overfit test, CorrNet v2 train, resume from Drive, and diagnose_fa on CPU).
   - Rebuilt `data/doppel_code.zip` (80 KB).
   - All 47 unit tests passing. Zero em dashes across repository.
+
+### Added and Fixed (Phase 4, Checkpoint Selection Grid Extension, Zero-Recall Anomaly Resolution, and Rescore Tool)
+- Diagnosed and resolved the zero-recall anomaly in `detector/cnn/selection.py`:
+  - Identified root causes: `meets_budget` previously only checked `synth_far <= max_far` and `pristine_far <= max_far` without requiring `recall > 0`, causing all-negative prediction operating points (FAR = 0%) to be treated as valid budget-meeting solutions; coarse grid intervals lacked fine image-head and area points; fallback logic also selected 0-recall configurations.
+  - Enforced strict budget condition: `meets_budget` is true only if `recall > 1e-5` and `synth_clean_far <= 1%` and `pristine_far <= 1%`.
+  - Enforced strict nonzero recall for lowest max-FAR fallback candidates.
+  - Updated `is_better_checkpoint` to prefer checkpoints meeting budget with nonzero recall, and to favor `recall > 0` over `recall == 0` when neither meets budget.
+  - Extended 3D search grid to `tau` up to 0.95 (`[0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]`), image threshold `s` up to 0.99 (`[0.0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99]`), and `min_area` up to 1600 (`[0, 25, 50, 100, 200, 400, 800, 1200, 1600]`).
+  - Added unit test `test_zero_recall_reproduced_and_resolved` in `tests/test_checkpoint_selection.py` demonstrating that on synthetic scores with AUC ~ 0.8, the extended grid identifies valid operating points with nonzero recall within the 1% FAR budget.
+- Logging and Metrics Tracking:
+  - Updated `scripts/train_cnn.py` to log chosen `s`, `tau`, and `area` every epoch in console output: `Rec@Budget: XX.X% (s=X.XX, tau=X.XX, area=XXXX, meets=True/False)`.
+  - Added `val_image_thresh_budget` column to `train_log.csv` alongside `val_thresh_budget` and `val_area_budget`.
+  - Updated `scripts/select_threshold.py` with extended grid and strict `recall > 1e-5` budget condition.
+- Post-Hoc Checkpoint Rescoring:
+  - Created `scripts/rescore_checkpoints.py`: scans all periodic checkpoints (`epoch_XX.pt`) and `last.pt` in a run directory, runs the full 3D sweep on synthetic validation and pristine panels, and outputs a formatted markdown summary table and CSV.
+  - Added AST parser test `test_rescore_checkpoints_command_args` in `tests/test_notebook_calls.py`.
+  - Added Cell 10b to `notebooks/phase4_train.ipynb` executing `rescore_checkpoints.py` on Colab Drive run directory.
+  - Added Step 8 to `scripts/dryrun_notebook.py` validating `rescore_checkpoints.py` locally on CPU. All 8 dry-run steps pass cleanly.
+- Colab Assets:
+  - Added `scripts/rescore_checkpoints.py` to `scripts/make_colab_code_zip.sh` and rebuilt `data/doppel_code.zip` (84 KB).
+  - All 49 unit tests pass. Zero em dashes across the codebase.

@@ -5,9 +5,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 
-DEFAULT_THRESHOLDS = [0.3, 0.5, 0.7, 0.9]
-DEFAULT_MIN_AREAS = [0, 25, 50, 100, 200, 400, 800]
-DEFAULT_IMAGE_THRESHOLDS = [0.0, 0.3, 0.5, 0.7, 0.9]
+DEFAULT_THRESHOLDS = [0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]
+DEFAULT_MIN_AREAS = [0, 25, 50, 100, 200, 400, 800, 1200, 1600]
+DEFAULT_IMAGE_THRESHOLDS = [0.0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99]
 
 
 def load_checkpoint(checkpoint_path: Union[str, Path], map_location: Any = "cpu") -> Dict[str, Any]:
@@ -17,6 +17,16 @@ def load_checkpoint(checkpoint_path: Union[str, Path], map_location: Any = "cpu"
         return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     except TypeError:
         return torch.load(checkpoint_path, map_location=map_location)
+
+
+def _check_image_prob(r: Dict[str, Any], s: float) -> bool:
+    """Check if record meets image-head probability threshold s."""
+    if s <= 0.0:
+        return True
+    prob = r.get("image_prob")
+    if prob is None:
+        return False
+    return float(prob) >= s
 
 
 def sweep_thresholds(
@@ -36,8 +46,10 @@ def sweep_thresholds(
       - tau (pixel probability threshold)
       - min_area (connected component area threshold in px)
 
-    If no configuration meets FAR <= max_far on both sets, selects the configuration
-    achieving the lowest max-FAR: min(max(synth_far, pristine_far)).
+    Strict protocol:
+      - meets_budget is True ONLY IF recall > 0 and FAR <= max_far on BOTH sets.
+      - If no configuration meets the budget, selects the configuration achieving
+        the lowest max-FAR among configurations that have recall > 0.
 
     Returns:
         Dict containing selection outcome, best thresholds, achieved recall, FARs, and grid stats.
@@ -71,7 +83,7 @@ def sweep_thresholds(
     best_pristine_far = 1.0
     budget_met = False
 
-    # Fallback tracker: configuration with lowest max(synth_far, pristine_far)
+    # Fallback tracker: configuration with lowest max(synth_far, pristine_far) having recall > 0
     lowest_max_far = 2.0
     fallback_s = best_s
     fallback_thresh = best_thresh
@@ -89,8 +101,8 @@ def sweep_thresholds(
                 if n_clean > 0:
                     clean_flags = 0
                     for r in synth_clean_results:
-                        img_ok = True if s == 0.0 else (float(r.get("image_prob", 1.0)) >= s)
-                        flag_area = bool(r.get(f"flag_{tau}_{area}", r.get(f"flagged_{tau}_{area}", r.get(f"flagged_{tau}", False))))
+                        img_ok = _check_image_prob(r, s)
+                        flag_area = bool(r.get(f"flag_{tau}_{area}", r.get(f"flagged_{tau}_{area}", r.get(f"flag_{tau}", r.get(f"flagged_{tau}", False)))))
                         if img_ok and flag_area:
                             clean_flags += 1
                     synth_far = clean_flags / n_clean
@@ -101,8 +113,8 @@ def sweep_thresholds(
                 if n_pristine > 0:
                     pristine_flags = 0
                     for r in pristine_results:
-                        img_ok = True if s == 0.0 else (float(r.get("image_prob", 1.0)) >= s)
-                        flag_area = bool(r.get(f"flag_{tau}_{area}", r.get(f"flagged_{tau}_{area}", r.get(f"flagged_{tau}", False))))
+                        img_ok = _check_image_prob(r, s)
+                        flag_area = bool(r.get(f"flag_{tau}_{area}", r.get(f"flagged_{tau}_{area}", r.get(f"flag_{tau}", r.get(f"flagged_{tau}", False)))))
                         if img_ok and flag_area:
                             pristine_flags += 1
                     pristine_far = pristine_flags / n_pristine
@@ -113,15 +125,16 @@ def sweep_thresholds(
                 if n_forged > 0:
                     forged_hits = 0
                     for r in forged_results:
-                        img_ok = True if s == 0.0 else (float(r.get("image_prob", 1.0)) >= s)
-                        hit_area = bool(r.get(f"hit_{tau}_{area}", r.get(f"detected_{tau}_{area}", r.get(f"detected_{tau}", False))))
+                        img_ok = _check_image_prob(r, s)
+                        hit_area = bool(r.get(f"hit_{tau}_{area}", r.get(f"detected_{tau}_{area}", r.get(f"hit_{tau}", r.get(f"detected_{tau}", False)))))
                         if img_ok and hit_area:
                             forged_hits += 1
                     recall = forged_hits / n_forged
                 else:
                     recall = 0.0
 
-                meets = (synth_far <= max_far) and (pristine_far <= max_far)
+                # Strict requirement: meets budget ONLY IF recall > 0 and FAR <= max_far on both sets
+                meets = (synth_far <= max_far) and (pristine_far <= max_far) and (recall > 1e-5)
                 cur_max_far = max(synth_far, pristine_far)
 
                 per_config_stats.append({
@@ -151,22 +164,24 @@ def sweep_thresholds(
                             best_synth_far = synth_far
                             best_pristine_far = pristine_far
                 else:
-                    if cur_max_far < lowest_max_far - 1e-5:
-                        lowest_max_far = cur_max_far
-                        fallback_s = s
-                        fallback_thresh = tau
-                        fallback_area = area
-                        fallback_rec = recall
-                        fallback_s_far = synth_far
-                        fallback_p_far = pristine_far
-                    elif abs(cur_max_far - lowest_max_far) <= 1e-5:
-                        if (synth_far + pristine_far) < (fallback_s_far + fallback_p_far):
+                    # In fallback, only consider points with nonzero recall so we don't fall back to a trivial 0-detector
+                    if recall > 1e-5:
+                        if cur_max_far < lowest_max_far - 1e-5:
+                            lowest_max_far = cur_max_far
                             fallback_s = s
                             fallback_thresh = tau
                             fallback_area = area
                             fallback_rec = recall
                             fallback_s_far = synth_far
                             fallback_p_far = pristine_far
+                        elif abs(cur_max_far - lowest_max_far) <= 1e-5:
+                            if (recall > fallback_rec + 1e-5) or (abs(recall - fallback_rec) <= 1e-5 and (synth_far + pristine_far) < (fallback_s_far + fallback_p_far)):
+                                fallback_s = s
+                                fallback_thresh = tau
+                                fallback_area = area
+                                fallback_rec = recall
+                                fallback_s_far = synth_far
+                                fallback_p_far = pristine_far
 
     if not budget_met:
         best_s = fallback_s
@@ -195,46 +210,47 @@ def is_better_checkpoint(
     """Determine if current epoch is strictly better than the current best.
 
     Protocol:
-    1. An epoch meeting FAR <= 1% on both sets ALWAYS beats an epoch that failed.
+    1. An epoch meeting FAR <= 1% with recall > 0 ALWAYS beats an epoch that failed.
     2. Among epochs meeting the budget, higher recall wins. If recall is tied, higher fallback score wins.
-    3. Among epochs failing the budget, lowest max-FAR wins: min(max(synth_far, pristine_far)).
+    3. If neither meets budget, an epoch with recall > 0 beats an epoch with recall == 0.
+    4. Among non-budget epochs, lowest max-FAR wins: min(max(synth_far, pristine_far)).
        If max-FAR is tied, higher fallback score wins.
-
-    Args:
-        current: Dict with keys 'meets_budget', 'recall', 'synth_far', 'pristine_far', etc.
-        best: Dict with keys 'meets_budget', 'recall', 'synth_far', 'pristine_far', etc., or None.
-
-    Returns:
-        True if current is strictly superior to best.
     """
     if best is None:
         return True
 
-    curr_meets = current.get("meets_budget", False)
-    best_meets = best.get("meets_budget", False)
+    curr_rec = float(current.get("recall", current.get("best_recall", current.get("val_recall_budget", 0.0))))
+    best_rec = float(best.get("recall", best.get("best_recall", best.get("val_recall_budget", 0.0))))
+
+    curr_meets = bool(current.get("meets_budget", False)) and (curr_rec > 1e-5)
+    best_meets = bool(best.get("meets_budget", False)) and (best_rec > 1e-5)
 
     if curr_meets and not best_meets:
         return True
     if not curr_meets and best_meets:
         return False
 
-    curr_score = current.get("fallback_score", current.get("roc_auc", 0.0))
-    best_score = best.get("fallback_score", best.get("roc_auc", 0.0))
+    curr_score = float(current.get("fallback_score", current.get("roc_auc", current.get("val_roc_auc", 0.0))))
+    best_score = float(best.get("fallback_score", best.get("roc_auc", best.get("val_roc_auc", 0.0))))
 
     if curr_meets and best_meets:
-        curr_rec = current.get("recall", 0.0)
-        best_rec = best.get("recall", 0.0)
         if curr_rec > best_rec + 1e-4:
             return True
         elif abs(curr_rec - best_rec) <= 1e-4:
             return curr_score > best_score
         return False
     else:
-        # Neither meets budget: pick epoch with LOWEST max-FAR
-        curr_s_far = current.get("synth_far", current.get("best_synth_far", 1.0))
-        curr_p_far = current.get("pristine_far", current.get("best_pristine_far", 1.0))
-        best_s_far = best.get("synth_far", best.get("best_synth_far", 1.0))
-        best_p_far = best.get("pristine_far", best.get("best_pristine_far", 1.0))
+        # Neither meets budget: epoch with recall > 0 always beats an epoch with 0 recall
+        if (curr_rec > 1e-5) and (best_rec <= 1e-5):
+            return True
+        if (curr_rec <= 1e-5) and (best_rec > 1e-5):
+            return False
+
+        # Otherwise pick epoch with lowest max-FAR
+        curr_s_far = float(current.get("synth_far", current.get("best_synth_far", current.get("val_synth_clean_far", 1.0))))
+        curr_p_far = float(current.get("pristine_far", current.get("best_pristine_far", current.get("val_pristine_far", 1.0))))
+        best_s_far = float(best.get("synth_far", best.get("best_synth_far", best.get("val_synth_clean_far", 1.0))))
+        best_p_far = float(best.get("pristine_far", best.get("best_pristine_far", best.get("val_pristine_far", 1.0))))
 
         curr_max_far = max(curr_s_far, curr_p_far)
         best_max_far = max(best_s_far, best_p_far)

@@ -8,7 +8,7 @@ import nbformat
 import pytest
 
 from detector.colab_dataset import ColabDoppelDataset
-from scripts import diagnose_fa, eval_cnn, select_threshold, train_cnn
+from scripts import diagnose_fa, eval_cnn, rescore_checkpoints, select_threshold, train_cnn
 
 NOTEBOOK_PATH = Path(__file__).resolve().parent.parent / "notebooks" / "phase4_train.ipynb"
 
@@ -227,4 +227,42 @@ def test_diagnose_fa_command_args():
             assert parsed.checkpoint == "dummy_val"
         except SystemExit as e:
             pytest.fail(f"Cell {cell_idx} diagnose_fa command failed parse_args with error: {e}")
+
+
+def test_rescore_checkpoints_command_args():
+    """Verify all rescore_checkpoints.py shell commands in notebook parse successfully."""
+    nb = _load_notebook()
+    rescore_cmds = []
+
+    for idx, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        lines = cell.source.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith("!python3"):
+                cmd_str = line[len("!python3"):].strip()
+                while cmd_str.endswith("\\") and i + 1 < len(lines):
+                    i += 1
+                    cmd_str = cmd_str[:-1].strip() + " " + lines[i].strip()
+                tokens = shlex.split(cmd_str)
+                if tokens and "rescore_script" in tokens[0]:
+                    args = []
+                    for t in tokens[1:]:
+                        if t.startswith("$") or t.startswith("/content"):
+                            args.append("dummy_val")
+                        else:
+                            args.append(t)
+                    rescore_cmds.append((idx, args))
+            i += 1
+
+    assert len(rescore_cmds) >= 1, "Expected rescore_checkpoints call in notebook."
+
+    for cell_idx, args in rescore_cmds:
+        try:
+            parsed = rescore_checkpoints.parse_args(args)
+            assert parsed.run_dir == "dummy_val"
+        except SystemExit as e:
+            pytest.fail(f"Cell {cell_idx} rescore_checkpoints command failed parse_args with error: {e}")
 

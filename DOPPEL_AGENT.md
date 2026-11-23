@@ -80,12 +80,13 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 4 CorrNet v2 and Colab Diagnostics Suite Complete:** Resolved content blob false alarms by eliminating single-partner crop memorization and adding an image-level decision head.
-- **Crop Partner Guarantee:** Audited 2,000 train samples in `detector/colab_dataset.py` (before: 5.29% orphaned single-patch crops; after: 100% complete source-target pairs). Dynamic crop expansion (up to 512 px) and unpartnered region zeroing prevent the network from penalizing empty self-correlation.
-- **Model v2 (ResNetCorrNet with Image Head):** Added `--image-head` pooling layer4 (512-d) and top-4 self-correlation summary statistics (8-d) into a linear image classifier. Trained with image BCE (weight 1.0) plus pixel BCE (`pos_weight=1.0`) and forged-only soft Dice. Compound decision rule in `detector/cnn/infer.py` (`image_prob >= s and mask_area >= a`).
-- **Validation Selection:** Upgraded `detector/cnn/selection.py` to 3D grid sweep (`s x tau x a`) maximizing recall subject to <= 1.0% FAR on both synthetic clean twins and real pristine panels, with lowest max-FAR fallback when no checkpoint meets budget. Added PyTorch 2.6+ `weights_only=False` handling in shared `load_checkpoint`.
-- **Diagnostics Suite:** Extended `scripts/diagnose_fa.py` with tau in {0.3, 0.5, 0.7, 0.9, 0.95, 0.98} x min_area in {0, 50, 100, 200, 400, 800, 1600}, training loss configuration display, class/tier FAR breakdowns, and recall breakdowns with Wilson 95% CIs.
-- **Colab Notebook & Verification:** Added Cell 8b in `notebooks/phase4_train.ipynb` for CorrNet v2 training (25 epochs, 120 min budget) and immediate diagnostics on `last.pt`. Validated end-to-end via 7-step `scripts/dryrun_notebook.py` on CPU. Rebuilt `data/doppel_code.zip` (80 KB). All 47 unit tests pass. Zero em dashes.
+**Phase 4 CorrNet v2 Checkpoint Selection Fix and Rescore Suite Complete:**
+- **Zero-Recall Anomaly Diagnosis and Fix:** Identified root causes in `detector/cnn/selection.py`: `meets_budget` previously allowed all-negative predictions (FAR = 0%) to count as valid budget solutions without enforcing `recall > 0`, while coarse grids skipped intermediate thresholds and fallback also selected zero-recall points. Enforced `meets_budget` strictly requires `recall > 1e-5` alongside `synth_clean_far <= 1%` and `pristine_far <= 1%`.
+- **Extended 3D Grid Sweep:** Extended grid in `selection.py`, `train_cnn.py`, and `select_threshold.py` to tau up to 0.95 (`[0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]`), image threshold s up to 0.99 (`[0.0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99]`), and min area up to 1600 (`[0, 25, 50, 100, 200, 400, 800, 1200, 1600]`).
+- **Unit Test Coverage:** Added `test_zero_recall_reproduced_and_resolved` in `tests/test_checkpoint_selection.py` demonstrating that on synthetic scores with AUC ~ 0.8, the extended grid identifies valid operating points with nonzero recall within the 1% FAR budget.
+- **Per-Epoch Logging:** Updated `train_cnn.py` to log chosen `s`, `tau`, `area`, and `meets` status on console and write `val_image_thresh_budget` to `train_log.csv`.
+- **Post-Hoc Checkpoint Rescoring Tool:** Added `scripts/rescore_checkpoints.py` to re-evaluate all `epoch_XX.pt` and `last.pt` checkpoints across the full 3D sweep and print summary markdown/CSV comparison tables.
+- **Notebook & Assets:** Added Cell 10b in `notebooks/phase4_train.ipynb`. Verified end-to-end via 8-step `scripts/dryrun_notebook.py`. Added `rescore_checkpoints.py` to `scripts/make_colab_code_zip.sh` and rebuilt `data/doppel_code.zip` (84 KB). All 49 unit tests pass. Zero em dashes.
 
 (Update this line when a step finishes.)
 

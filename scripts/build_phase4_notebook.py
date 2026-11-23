@@ -469,6 +469,29 @@ if worst_fig.exists():
 """
 cells.append(nbf.v4.new_code_cell(cell10_diag_code))
 
+# Cell 10b: Rescore Checkpoints in CorrNet v2 Run Directory
+cell10b_rescore_code = """rescore_script = DOPPEL_ROOT / "scripts" / "rescore_checkpoints.py"
+val_csv = SYNTH_DIR / "val_manifest.csv"
+pristine_zip = CONTENT_DATA / "pristine_heldout.zip"
+rescore_run_dir = DRIVE_RUNS_DIR / "corr_v2"
+if not rescore_run_dir.exists():
+    rescore_run_dir = Path("/content/runs/corr_v2")
+
+if rescore_run_dir.exists():
+    print(f"\\n================ Rescoring All Checkpoints in {rescore_run_dir.name} ================")
+    rescore_out_csv = rescore_run_dir / "rescore_summary.csv"
+    !python3 "$rescore_script" \\
+        --run-dir "$rescore_run_dir" \\
+        --val-manifest "$val_csv" \\
+        --data-dir "$CONTENT_DATA" \\
+        --pristine-zip "$pristine_zip" \\
+        --pristine-subset 1000 \\
+        --out-csv "$rescore_out_csv"
+else:
+    print(f"[INFO] Run directory {rescore_run_dir} not found. Skipping rescore.")
+"""
+cells.append(nbf.v4.new_code_cell(cell10b_rescore_code))
+
 # Cell 11: Plot Cell
 cell11_plot_code = """import pandas as pd
 import matplotlib.pyplot as plt

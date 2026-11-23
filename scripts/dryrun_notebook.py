@@ -260,7 +260,7 @@ def main():
         print(f"[PASS] Resumed training passed in {elapsed_res:.1f}s. Epoch 2 reached and Drive synced.")
 
         # 8. Simulate Diagnostic Cell: diagnose_fa.py on resumed last.pt
-        print("\n[STEP 7/7] Executing False Alarm Diagnostic Cell (diagnose_fa.py on corr_v2 last.pt)...")
+        print("\n[STEP 7/8] Executing False Alarm Diagnostic Cell (diagnose_fa.py on corr_v2 last.pt)...")
         diag_out = content_dir / "diag_corr_v2"
         cmd_diag = [
             sys.executable,
@@ -285,6 +285,31 @@ def main():
 
         assert (diag_out / "worst_clean_panels.png").exists(), "Missing worst_clean_panels.png from diagnostics"
         print(f"[PASS] False alarm diagnostics passed in {elapsed_diag:.1f}s. Overlay figure generated.")
+
+        # 9. Simulate Rescore Cell: rescore_checkpoints.py on fake Drive corr_v2 run
+        print("\n[STEP 8/8] Executing Checkpoint Rescore Cell (rescore_checkpoints.py)...")
+        rescore_csv = corr_v2_drive_sync / "rescore_summary.csv"
+        cmd_rescore = [
+            sys.executable,
+            str(doppel_root / "scripts" / "rescore_checkpoints.py"),
+            "--run-dir", str(corr_v2_drive_sync),
+            "--val-manifest", str(val_manifest),
+            "--val-subset", "16",
+            "--data-dir", str(content_data),
+            "--pristine-zip", str(content_data / "pristine_heldout.zip"),
+            "--pristine-subset", "10",
+            "--out-csv", str(rescore_csv),
+            "--device", "cpu",
+        ]
+        t0 = time.time()
+        res_rescore = subprocess.run(cmd_rescore, capture_output=True, text=True)
+        elapsed_rescore = time.time() - t0
+        if res_rescore.returncode != 0:
+            print(f"[FAIL] rescore_checkpoints.py call failed:\nSTDOUT:\n{res_rescore.stdout}\nSTDERR:\n{res_rescore.stderr}")
+            sys.exit(1)
+
+        assert rescore_csv.exists(), "Missing rescore_summary.csv"
+        print(f"[PASS] Rescore checkpoints passed in {elapsed_rescore:.1f}s. Table generated.")
 
     print("\n======================================================================")
     print("ALL DRY-RUN TESTS PASSED SUCCESSFULLY END-TO-END")

@@ -150,13 +150,13 @@ def evaluate(
       - Maximize recall subject to both FARs <= 1.0%.
     """
     if thresholds is None:
-        thresholds = [0.3, 0.5, 0.7, 0.9]
+        thresholds = [0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]
 
     if min_areas is None:
         if min_area is not None:
             min_areas = [min_area]
         else:
-            min_areas = [0, 25, 50, 100, 200, 400, 800]
+            min_areas = [0, 25, 50, 100, 200, 400, 800, 1200, 1600]
 
     model.eval()
 
@@ -549,6 +549,7 @@ def main():
         "val_forged_mcc",
         "val_roc_auc",
         "val_recall_budget",
+        "val_image_thresh_budget",
         "val_thresh_budget",
         "val_area_budget",
         "val_meets_budget",
@@ -647,6 +648,7 @@ def main():
         val_mcc = val_metrics["val_forged_mcc"]
         val_auc = val_metrics["val_roc_auc"]
         val_rec_budget = val_metrics["val_recall_budget"]
+        val_s_budget = val_metrics.get("val_image_thresh_budget", 0.0)
         val_thresh_budget = val_metrics["val_thresh_budget"]
         val_area_budget = val_metrics.get("val_area_budget", 0)
         val_meets_budget = bool(val_metrics["val_meets_budget"] == 1)
@@ -657,7 +659,7 @@ def main():
             f"Epoch {epoch:3d}/{args.epochs:3d} | "
             f"Train Loss: {avg_loss:.4f} (F1: {train_f1:.4f}) | "
             f"Val F1: {val_f1:.4f} | AUC: {val_auc:.4f} | "
-            f"Rec@Budget: {val_rec_budget*100:.1f}% (tau={val_thresh_budget:.2f}, area={val_area_budget}, meets={val_meets_budget}) | "
+            f"Rec@Budget: {val_rec_budget*100:.1f}% (s={val_s_budget:.2f}, tau={val_thresh_budget:.2f}, area={val_area_budget}, meets={val_meets_budget}) | "
             f"SynthFAR: {synth_far*100:.2f}% | PristineFAR: {pristine_far*100:.2f}% | "
             f"({elapsed:.1f}s)"
         )
@@ -675,6 +677,7 @@ def main():
                 f"{val_mcc:.4f}",
                 f"{val_auc:.4f}",
                 f"{val_rec_budget:.4f}",
+                f"{val_s_budget:.2f}",
                 f"{val_thresh_budget:.2f}",
                 val_area_budget,
                 1 if val_meets_budget else 0,

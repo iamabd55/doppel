@@ -218,3 +218,109 @@ def test_sweep_thresholds_3d_compound():
     assert res["best_synth_far"] == 0.01
     assert res["best_pristine_far"] == 0.01
 
+
+def test_zero_recall_reproduced_and_resolved():
+    """Reproduce zero-recall bug (AUC ~0.8) and prove nonzero-recall point is found with extended grid."""
+    import numpy as np
+    from sklearn.metrics import roc_auc_score
+
+    np.random.seed(42)
+    # Synthetic scores yielding AUC around 0.80
+    f_scores = np.clip(np.random.normal(0.65, 0.20, 100), 0, 1)
+    c_scores = np.clip(np.random.normal(0.42, 0.20, 100), 0, 1)
+    p_scores = np.clip(np.random.normal(0.40, 0.20, 100), 0, 1)
+
+    auc = float(roc_auc_score([1] * 100 + [0] * 100, list(f_scores) + list(c_scores)))
+    assert 0.75 <= auc <= 0.85, f"Expected AUC around 0.80, got {auc:.3f}"
+
+    # Build records where:
+    # 1. At coarse grid points (s in [0.0, 0.7], tau=0.5, area=50):
+    #    clean has 2 flags (2% FAR > 1%), pristine has 2 flags (2% FAR > 1%) -> fails budget
+    # 2. At coarse point (s=0.90, tau=0.70, area=50):
+    #    clean has 0 flags, pristine has 0 flags, but forged has 0 hits -> recall = 0.0!
+    # 3. At extended point (s=0.95, tau=0.50, area=50):
+    #    clean has 1 flag (1% FAR <= 1%), pristine has 1 flag (1% FAR <= 1%), forged has 50 hits -> recall = 0.50!
+
+    synth_clean = []
+    pristine = []
+    forged = []
+
+    for i in range(100):
+        c_prob = float(c_scores[i])
+        p_prob = float(p_scores[i])
+        f_prob = float(f_scores[i])
+
+        # Clean: flags 2 images at s <= 0.90, but only 1 image at s >= 0.95
+        c_rec = {
+            "image_prob": c_prob,
+            "flagged_0.5_50": i < 2,
+            "flagged_0.7_50": False,  # 0 flags at tau=0.7
+        }
+        # Pristine: flags 2 images at s <= 0.90, but only 1 at s >= 0.95
+        p_rec = {
+            "image_prob": p_prob,
+            "flagged_0.5_50": i < 2,
+            "flagged_0.7_50": False,  # 0 flags at tau=0.7
+        }
+        # Forged: 50 forged images have hits at tau=0.5, 0 hits at tau=0.7
+        f_rec = {
+            "image_prob": f_prob,
+            "hit_0.5_50": i < 50,
+            "hit_0.7_50": False,      # 0 hits at tau=0.7
+        }
+
+        # Ensure image_prob condition: image 0 has prob 0.96 (so it passes s=0.95)
+        # image 1 has prob 0.92 (so it passes s=0.90 but fails s=0.95)
+        if i == 0:
+            c_rec["image_prob"] = 0.96
+            p_rec["image_prob"] = 0.96
+        elif i == 1:
+            c_rec["image_prob"] = 0.92
+            p_rec["image_prob"] = 0.92
+
+        # Forged items: 50 items have image_prob >= 0.95 and hit_0.5_50
+        if i < 50:
+            f_rec["image_prob"] = 0.96
+            f_rec["hit_0.5_50"] = True
+
+        synth_clean.append(c_rec)
+        pristine.append(p_rec)
+        forged.append(f_rec)
+
+    # Test 1: If restricted to coarse grid (s up to 0.90 only), tau=0.7 area=50 has 0 FAR but 0 recall.
+    # The new sweep MUST NOT claim meets_budget=True for 0 recall!
+    res_coarse = sweep_thresholds(
+        forged,
+        synth_clean,
+        pristine,
+        thresholds=[0.5, 0.7],
+        min_areas=[50],
+        image_thresholds=[0.0, 0.5, 0.7, 0.9],
+        max_far=0.01,
+    )
+    assert res_coarse["meets_budget"] is False, "A zero-recall point must NEVER be flagged as meets_budget=True"
+
+    # Test 2: On extended grid (including s=0.95), the operating point with 50% recall and <= 1% FAR is found!
+    res_extended = sweep_thresholds(
+        forged,
+        synth_clean,
+        pristine,
+        thresholds=[0.5, 0.7],
+        min_areas=[50],
+        image_thresholds=[0.0, 0.5, 0.7, 0.9, 0.95],
+        max_far=0.01,
+    )
+    assert res_extended["meets_budget"] is True
+    assert res_extended["best_image_threshold"] == 0.95
+    assert res_extended["best_threshold"] == 0.5
+    assert res_extended["best_min_area"] == 50
+    assert res_extended["best_recall"] == 0.50
+    assert res_extended["best_synth_far"] <= 0.01
+    assert res_extended["best_pristine_far"] <= 0.01
+
+    # Test 3: is_better_checkpoint rejects a zero-recall checkpoint over a nonzero-recall one
+    zero_recall_ckpt = {"meets_budget": False, "recall": 0.0, "roc_auc": 0.82, "best_synth_far": 0.0, "best_pristine_far": 0.0}
+    nonzero_recall_ckpt = {"meets_budget": True, "recall": 0.50, "roc_auc": 0.80, "best_synth_far": 0.01, "best_pristine_far": 0.01}
+    assert is_better_checkpoint(nonzero_recall_ckpt, zero_recall_ckpt) is True
+    assert is_better_checkpoint(zero_recall_ckpt, nonzero_recall_ckpt) is False
+
