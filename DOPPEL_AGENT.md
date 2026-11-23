@@ -82,7 +82,7 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 **Phase 4 Wrap-Up Step 1 (Thresholds Selection) Complete; Ready for Step 2 (Inference):**
 - **Threshold Selection (`scripts/select_threshold.py`):** Executed once on CPU using `checkpoints/corr_v2/last.pt` on all 4,039 held-out pristine panels and 1,000 synthetic validation images (500 clean twins, 500 forged).
-- **Prediction Caching:** Cached per-image outputs to `checkpoints/corr_v2/val_pristine_preds.npz` (57.2 KB), enabling instant (<4s) full grid sweeps without recomputing neural network forward passes.
+- **Prediction Caching & Provenance:** Cached per-image outputs to `checkpoints/corr_v2/val_pristine_preds.npz` (59.5 KB), enabling instant (<4s) full grid sweeps. Hardened with strict provenance validation (`verify_cache_provenance`) across checkpoint/data sizes, mtimes, subsets, and architectures to reject stale caches. All 52 tests pass.
 - **Operating Points:** Evaluated compound decision rule (s x tau x min_area) across FAR budgets (1.0%, 1.5%, 2.0%, 3.0%) for Overall, Blot/Gel, and Microscopy with 95% Wilson confidence intervals.
   - Primary 1.0% Budget:
     - Overall: Recall 51.4% [47.0-55.8], s=0.99, tau=0.70, area=25 px (Synth Clean FAR: 1.00%, Real Pristine FAR: 0.69%)

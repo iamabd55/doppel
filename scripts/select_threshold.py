@@ -278,6 +278,112 @@ def fast_slice_sweep(
     }
 
 
+def verify_cache_provenance(
+    cache: Any,
+    ckpt_path: Path,
+    val_manifest: Path,
+    pristine_zip: Path,
+    val_subset: Optional[int],
+    pristine_subset: Optional[int],
+    model_type: Optional[str],
+    has_image_head: bool,
+    candidate_thresholds: List[float],
+    candidate_areas: List[int],
+) -> Tuple[bool, str]:
+    """Verify that cached per-image outputs match current checkpoint, inputs, and options."""
+    req_keys = [
+        "ckpt_name",
+        "ckpt_size",
+        "ckpt_mtime",
+        "val_manifest_size",
+        "val_manifest_mtime",
+        "pristine_zip_size",
+        "pristine_zip_mtime",
+        "val_subset",
+        "pristine_subset",
+        "has_image_head",
+    ]
+    for k in req_keys:
+        if k not in cache:
+            return False, f"Missing provenance key '{k}' in cache (legacy or incomplete cache)."
+
+    # Checkpoint verification
+    if ckpt_path.exists():
+        cur_size = ckpt_path.stat().st_size
+        cached_size = int(cache["ckpt_size"])
+        if cur_size != cached_size:
+            return False, f"Checkpoint file size mismatch ({cur_size} bytes vs cached {cached_size} bytes)."
+        cur_mtime = ckpt_path.stat().st_mtime
+        cached_mtime = float(cache["ckpt_mtime"])
+        if cur_mtime > cached_mtime + 1.0:
+            return False, f"Checkpoint was modified after cache was generated (mtime {cur_mtime} > {cached_mtime})."
+        cached_name = str(cache["ckpt_name"])
+        if cached_name and cached_name != ckpt_path.name:
+            return False, f"Checkpoint name mismatch ({ckpt_path.name} vs cached {cached_name})."
+    else:
+        return False, f"Checkpoint {ckpt_path} not found on disk."
+
+    # Validation manifest verification
+    if val_manifest.exists():
+        cur_size = val_manifest.stat().st_size
+        cached_size = int(cache["val_manifest_size"])
+        if cur_size != cached_size:
+            return False, f"Validation manifest size mismatch ({cur_size} vs cached {cached_size})."
+        cur_mtime = val_manifest.stat().st_mtime
+        cached_mtime = float(cache["val_manifest_mtime"])
+        if cur_mtime > cached_mtime + 1.0:
+            return False, "Validation manifest was modified after cache generation."
+    else:
+        return False, f"Validation manifest {val_manifest} not found on disk."
+
+    # Pristine archive verification
+    if pristine_zip.exists():
+        cur_size = pristine_zip.stat().st_size
+        cached_size = int(cache["pristine_zip_size"])
+        if cur_size != cached_size:
+            return False, f"Pristine zip size mismatch ({cur_size} vs cached {cached_size})."
+        cur_mtime = pristine_zip.stat().st_mtime
+        cached_mtime = float(cache["pristine_zip_mtime"])
+        if cur_mtime > cached_mtime + 1.0:
+            return False, "Pristine zip was modified after cache generation."
+    else:
+        return False, f"Pristine zip {pristine_zip} not found on disk."
+
+    # Subset options verification
+    cached_val_sub = int(cache["val_subset"])
+    req_val_sub = val_subset if val_subset is not None else -1
+    if cached_val_sub != req_val_sub:
+        return False, f"Validation subset mismatch (requested {req_val_sub} vs cached {cached_val_sub})."
+
+    cached_pris_sub = int(cache["pristine_subset"])
+    req_pris_sub = pristine_subset if pristine_subset is not None else -1
+    if cached_pris_sub != req_pris_sub:
+        return False, f"Pristine subset mismatch (requested {req_pris_sub} vs cached {cached_pris_sub})."
+
+    # Architecture and image head verification
+    cached_head = bool(cache["has_image_head"])
+    if cached_head != has_image_head:
+        return False, f"Image head mismatch (requested {has_image_head} vs cached {cached_head})."
+
+    if model_type is not None:
+        cached_model = str(cache.get("model_type", ""))
+        if cached_model and cached_model != model_type:
+            return False, f"Model architecture mismatch ({model_type} vs cached {cached_model})."
+
+    # Candidate grids verification
+    cached_taus = [round(float(t), 4) for t in cache["candidate_thresholds"]]
+    req_taus = [round(float(t), 4) for t in candidate_thresholds]
+    if cached_taus != req_taus:
+        return False, "Candidate thresholds mismatch."
+
+    cached_areas = [int(a) for a in cache["candidate_areas"]]
+    req_areas = [int(a) for a in candidate_areas]
+    if cached_areas != req_areas:
+        return False, "Candidate areas mismatch."
+
+    return True, "Cache provenance verified."
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device)
@@ -293,46 +399,75 @@ def main():
     cache_path = Path(args.cache_npz)
     loaded_from_cache = False
 
+    ckpt_path = Path(args.checkpoint)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+    val_manifest = Path(args.val_manifest)
+    if not val_manifest.exists():
+        alt_manifest = Path(args.data_dir) / "synthetic" / "val_manifest.csv"
+        if alt_manifest.exists():
+            val_manifest = alt_manifest
+        else:
+            raise FileNotFoundError(f"Missing val manifest: {val_manifest}")
+
+    pristine_zip = Path(args.pristine_zip)
+    if not pristine_zip.exists():
+        raise FileNotFoundError(f"Missing pristine zip: {pristine_zip}")
+
+    ckpt = load_checkpoint(ckpt_path, map_location=device)
+    config = ckpt.get("config", {})
+
+    model_type = args.model or config.get("model")
+    if model_type is None:
+        state_keys = ckpt["model_state_dict"].keys()
+        if any("corr" in k for k in state_keys) or any("dec8.conv1.0.weight" in k for k in state_keys):
+            model_type = "corr"
+        else:
+            model_type = "unet"
+
+    has_image_head = args.image_head or config.get("image_head", False) or any(
+        "image_head_fc" in k for k in ckpt.get("model_state_dict", {}).keys()
+    )
+
     if cache_path.exists() and not args.force_compute:
-        print(f"[INFO] Found prediction cache at {cache_path}. Loading per-image outputs...")
+        print(f"[INFO] Inspecting prediction cache at {cache_path}...")
         cache = np.load(cache_path, allow_pickle=True)
-        val_is_forged = cache["val_is_forged"]
-        val_class = cache["val_class"]
-        val_image_prob = cache["val_image_prob"]
-        val_max_prob = cache["val_max_prob"]
-        val_forged_max_overlap_area = cache["val_forged_max_overlap_area"]
-        val_clean_max_area = cache["val_clean_max_area"]
-        pristine_class = cache["pristine_class"]
-        pristine_image_prob = cache["pristine_image_prob"]
-        pristine_max_prob = cache["pristine_max_prob"]
-        pristine_max_area = cache["pristine_max_area"]
-        candidate_thresholds = [float(t) for t in cache["candidate_thresholds"]]
-        candidate_areas = [int(a) for a in cache["candidate_areas"]]
-        has_image_head = bool(cache.get("has_image_head", True))
-        model_type = str(cache.get("model_type", "corr"))
-        loaded_from_cache = True
-        print(f"[SUCCESS] Loaded {len(val_is_forged)} val samples and {len(pristine_class)} pristine panels from cache.")
-    else:
-        # Run inference and populate cache
-        ckpt_path = Path(args.checkpoint)
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-        ckpt = load_checkpoint(ckpt_path, map_location=device)
-        config = ckpt.get("config", {})
-
-        model_type = args.model or config.get("model")
-        if model_type is None:
-            state_keys = ckpt["model_state_dict"].keys()
-            if any("corr" in k for k in state_keys) or any("dec8.conv1.0.weight" in k for k in state_keys):
-                model_type = "corr"
-            else:
-                model_type = "unet"
-
-        has_image_head = args.image_head or config.get("image_head", False) or any(
-            "image_head_fc" in k for k in ckpt.get("model_state_dict", {}).keys()
+        valid, reason = verify_cache_provenance(
+            cache=cache,
+            ckpt_path=ckpt_path,
+            val_manifest=val_manifest,
+            pristine_zip=pristine_zip,
+            val_subset=args.val_subset,
+            pristine_subset=args.pristine_subset,
+            model_type=model_type,
+            has_image_head=has_image_head,
+            candidate_thresholds=candidate_thresholds,
+            candidate_areas=candidate_areas,
         )
+        if valid:
+            print(f"[SUCCESS] Cache provenance verified for {ckpt_path.name} (inputs match). Loading per-image outputs...")
+            val_is_forged = cache["val_is_forged"]
+            val_class = cache["val_class"]
+            val_image_prob = cache["val_image_prob"]
+            val_max_prob = cache["val_max_prob"]
+            val_forged_max_overlap_area = cache["val_forged_max_overlap_area"]
+            val_clean_max_area = cache["val_clean_max_area"]
+            pristine_class = cache["pristine_class"]
+            pristine_image_prob = cache["pristine_image_prob"]
+            pristine_max_prob = cache["pristine_max_prob"]
+            pristine_max_area = cache["pristine_max_area"]
+            candidate_thresholds = [float(t) for t in cache["candidate_thresholds"]]
+            candidate_areas = [int(a) for a in cache["candidate_areas"]]
+            has_image_head = bool(cache.get("has_image_head", True))
+            model_type = str(cache.get("model_type", "corr"))
+            loaded_from_cache = True
+            print(f"[SUCCESS] Loaded {len(val_is_forged)} val samples and {len(pristine_class)} pristine panels from cache.")
+        else:
+            print(f"[WARNING] Cache mismatch: {reason}. Recomputing per-image predictions...")
 
+    if not loaded_from_cache:
+        # Run inference and populate cache
         print(f"[INFO] Running inference with {model_type} (image_head={has_image_head}) from {ckpt_path.name}")
         if model_type == "unet":
             model = ResNetUNet(pretrained=False)
@@ -342,14 +477,6 @@ def main():
         model.load_state_dict(ckpt["model_state_dict"])
         model.to(device)
         model.eval()
-
-        val_manifest = Path(args.val_manifest)
-        if not val_manifest.exists():
-            alt_manifest = Path(args.data_dir) / "synthetic" / "val_manifest.csv"
-            if alt_manifest.exists():
-                val_manifest = alt_manifest
-            else:
-                raise FileNotFoundError(f"Missing val manifest: {val_manifest}")
 
         val_dataset = ColabDoppelDataset(
             manifest_path=str(val_manifest),
@@ -537,6 +664,18 @@ def main():
             candidate_areas=np.array(candidate_areas, dtype=np.int32),
             has_image_head=has_image_head,
             model_type=model_type,
+            # Provenance metadata
+            ckpt_name=str(ckpt_path.name),
+            ckpt_size=ckpt_path.stat().st_size if ckpt_path.exists() else 0,
+            ckpt_mtime=ckpt_path.stat().st_mtime if ckpt_path.exists() else 0.0,
+            val_manifest_name=str(val_manifest.name),
+            val_manifest_size=val_manifest.stat().st_size if val_manifest.exists() else 0,
+            val_manifest_mtime=val_manifest.stat().st_mtime if val_manifest.exists() else 0.0,
+            pristine_zip_name=str(pristine_zip.name),
+            pristine_zip_size=pristine_zip.stat().st_size if pristine_zip.exists() else 0,
+            pristine_zip_mtime=pristine_zip.stat().st_mtime if pristine_zip.exists() else 0.0,
+            val_subset=args.val_subset if args.val_subset is not None else -1,
+            pristine_subset=args.pristine_subset if args.pristine_subset is not None else -1,
         )
         print(f"[SUCCESS] Prediction cache saved ({os.path.getsize(cache_path) / 1024:.1f} KB).")
 

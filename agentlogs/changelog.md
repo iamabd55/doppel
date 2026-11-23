@@ -381,5 +381,10 @@ All notable changes to the Doppel repository are documented here.
     - Blot/Gel: Recall 68.7% [62.7-74.1], s=0.95, tau=0.30, area=25 px (Synth Clean FAR: 0.79%, Real Pristine FAR: 0.86%)
     - Microscopy: Recall 23.8% [18.9-29.5], s=0.99, tau=0.30, area=1600 px (Synth Clean FAR: 1.21%, Real Pristine FAR: 0.55%, fallback point)
 - Written locked threshold configuration to `configs/cnn_threshold.yaml`.
+- Hardened Cache Provenance Verification:
+  - Added `verify_cache_provenance` in `scripts/select_threshold.py` checking checkpoint byte size and mtime, manifest/archive byte sizes and mtimes, data subset flags (`val_subset`, `pristine_subset`), model architecture, and candidate grid parameters before accepting cache contents.
+  - Automatically invalidates stale or mismatched cache files, prints descriptive warnings, and recomputes predictions.
+  - Added unit test `test_cache_provenance_verification` in `tests/test_checkpoint_selection.py`. All 52 unit tests pass.
 - Strict evaluation protocol maintained: BioFors IDD test set and synthetic test set remain completely untouched (touch count: 0).
+
 

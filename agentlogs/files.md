@@ -46,7 +46,7 @@ Summary of files in the Doppel repository:
 - `scripts/diagnose_fa.py`: False alarm diagnostic tool evaluating max probability, distance to edge, multi-tau grid FAR/recall with Wilson CIs, loss config inspection, moderate tier inclusion, image-head compound decision rule evaluation, class/tier breakdowns, and overlay figures of worst clean panels.
 - `scripts/dryrun_notebook.py`: End-to-end local dry-run script executing 9 steps (notebook code cells 4, 5, shortened 6, CorrNet v2 training, `--resume`, diagnose_fa, rescore_checkpoints, and select_threshold) in a temporary directory on CPU with `--subset 16` and verifying Drive syncing.
 - `scripts/rescore_checkpoints.py`: Post-hoc evaluation script scanning all checkpoints in a training run directory, evaluating multi-budget sweeps (0.01, 0.02, 0.03) and per-class breakdowns (Overall, Blot/Gel, Microscopy) with Wilson CIs.
-- `scripts/select_threshold.py`: Step D threshold selection script optimizing (s, pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels across multiple FAR budgets (0.01, 0.015, 0.02, 0.03), caching per-image predictions to .npz for instant reruns, and generating side-by-side per-class operating points in `configs/cnn_threshold.yaml`.
+- `scripts/select_threshold.py`: Step D threshold selection script optimizing (s, pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels across multiple FAR budgets (0.01, 0.015, 0.02, 0.03), validating cache provenance (checkpoint, manifests, subsets, architecture) to prevent stale cache use, caching per-image predictions to .npz for instant reruns, and generating side-by-side per-class operating points in `configs/cnn_threshold.yaml`.
 - `scripts/eval_cnn.py`: Detailed validation and ablation evaluation script breaking down performance by class, tier, transform type, copy count, and patch area, with `--ablate-corr` support.
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
 - `scripts/make_pristine_heldout_zip.py`: Packages 4,039 pristine panels from the 177 held-out train documents into `data/pristine_heldout.zip` for false alarm validation.
@@ -79,7 +79,7 @@ Summary of files in the Doppel repository:
 - `scripts/test_sift_flip.py`: Step 2.6 demonstration script comparing standard SIFT vs flip pass SIFT on mirrored synthetic copy-move forgeries.
 
 ## Automated Test Suite (`tests/`)
-- `tests/test_checkpoint_selection.py`: Unit tests verifying threshold sweep and checkpoint selection logic (cold start, ROC AUC fallback, budget transition, budget competition).
+- `tests/test_checkpoint_selection.py`: Unit tests verifying threshold sweep, checkpoint selection logic (cold start, ROC AUC fallback, budget transition, budget competition), and cache provenance verification.
 - `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, AMP fp16 compatibility, and `--ablate-corr` correlation ablation.
 - `tests/test_dice_loss.py`: Unit tests for soft Dice loss ensuring clean twins are excluded from Dice calculations, mixed perfect predictions yield near-zero loss, all-zero predictions yield high loss, and clean samples contribute zero gradient.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.

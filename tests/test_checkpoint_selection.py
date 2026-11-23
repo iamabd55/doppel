@@ -387,3 +387,123 @@ def test_sweep_with_different_budgets():
     assert res_2pct["best_recall"] == 0.60
 
 
+def test_cache_provenance_verification(tmp_path):
+    """Verify that verify_cache_provenance correctly validates provenance keys and rejects mismatches."""
+    from scripts.select_threshold import verify_cache_provenance
+
+    # Create dummy files
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"dummy_weights" * 100)
+
+    val_manifest = tmp_path / "val_manifest.csv"
+    val_manifest.write_text("image_path,label\n")
+
+    pristine_zip = tmp_path / "pristine.zip"
+    pristine_zip.write_bytes(b"PK0304" * 10)
+
+    taus = [0.3, 0.5, 0.7]
+    areas = [0, 50, 100]
+
+    valid_cache = {
+        "ckpt_name": ckpt.name,
+        "ckpt_size": ckpt.stat().st_size,
+        "ckpt_mtime": ckpt.stat().st_mtime,
+        "val_manifest_size": val_manifest.stat().st_size,
+        "val_manifest_mtime": val_manifest.stat().st_mtime,
+        "pristine_zip_size": pristine_zip.stat().st_size,
+        "pristine_zip_mtime": pristine_zip.stat().st_mtime,
+        "val_subset": -1,
+        "pristine_subset": -1,
+        "has_image_head": True,
+        "model_type": "corr",
+        "candidate_thresholds": taus,
+        "candidate_areas": areas,
+    }
+
+    # 1. Matching provenance passes
+    ok, msg = verify_cache_provenance(
+        cache=valid_cache,
+        ckpt_path=ckpt,
+        val_manifest=val_manifest,
+        pristine_zip=pristine_zip,
+        val_subset=None,
+        pristine_subset=None,
+        model_type="corr",
+        has_image_head=True,
+        candidate_thresholds=taus,
+        candidate_areas=areas,
+    )
+    assert ok is True
+    assert "verified" in msg
+
+    # 2. Checkpoint size mismatch fails
+    bad_ckpt_cache = dict(valid_cache, ckpt_size=999999)
+    ok, msg = verify_cache_provenance(
+        cache=bad_ckpt_cache,
+        ckpt_path=ckpt,
+        val_manifest=val_manifest,
+        pristine_zip=pristine_zip,
+        val_subset=None,
+        pristine_subset=None,
+        model_type="corr",
+        has_image_head=True,
+        candidate_thresholds=taus,
+        candidate_areas=areas,
+    )
+    assert ok is False
+    assert "size mismatch" in msg
+
+    # 3. Validation subset mismatch fails
+    bad_sub_cache = dict(valid_cache, val_subset=50)
+    ok, msg = verify_cache_provenance(
+        cache=bad_sub_cache,
+        ckpt_path=ckpt,
+        val_manifest=val_manifest,
+        pristine_zip=pristine_zip,
+        val_subset=None,
+        pristine_subset=None,
+        model_type="corr",
+        has_image_head=True,
+        candidate_thresholds=taus,
+        candidate_areas=areas,
+    )
+    assert ok is False
+    assert "subset mismatch" in msg
+
+    # 4. Architecture / image-head mismatch fails
+    bad_head_cache = dict(valid_cache, has_image_head=False)
+    ok, msg = verify_cache_provenance(
+        cache=bad_head_cache,
+        ckpt_path=ckpt,
+        val_manifest=val_manifest,
+        pristine_zip=pristine_zip,
+        val_subset=None,
+        pristine_subset=None,
+        model_type="corr",
+        has_image_head=True,
+        candidate_thresholds=taus,
+        candidate_areas=areas,
+    )
+    assert ok is False
+    assert "Image head mismatch" in msg
+
+    # 5. Missing provenance key fails (legacy cache)
+    incomplete_cache = dict(valid_cache)
+    del incomplete_cache["ckpt_size"]
+    ok, msg = verify_cache_provenance(
+        cache=incomplete_cache,
+        ckpt_path=ckpt,
+        val_manifest=val_manifest,
+        pristine_zip=pristine_zip,
+        val_subset=None,
+        pristine_subset=None,
+        model_type="corr",
+        has_image_head=True,
+        candidate_thresholds=taus,
+        candidate_areas=areas,
+    )
+    assert ok is False
+    assert "Missing provenance key" in msg
+
+
+

@@ -1,6 +1,6 @@
 # Phase 4 CNN locked operating thresholds
 # Selected on synthetic validation split + 4,039 real pristine held-out train panels
-# Selection date: 2026-11-23 16:21:49
+# Selection date: 2026-11-23 16:42:41
 # Strict protocol: BioFors test split and synthetic test split were NEVER accessed.
 # Note: Image class (Blot/Gel vs Microscopy) is assumed known at test time.
 # BioFors provides this metadata; in the production pipeline, an upstream panel
