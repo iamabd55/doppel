@@ -38,7 +38,7 @@ Summary of files in the Doppel repository:
 - `detector/cnn/unet.py`: Baseline ResNet-18 U-Net segmentation network with ImageNet pretraining, multi-scale skip connections, and native resolution mask logits.
 - `detector/cnn/corr_net.py`: Copy-move correlation network with ResNet-18 backbone, stride-8 feature self-correlation module with 128-d projection, Chebyshev spatial self-mask, zero-pad valid-mask filtering, top-4 match extraction, multi-scale skip decoder, optional image-level classification head (`--image-head`), and `--ablate-corr` support.
 - `detector/cnn/loss.py`: Loss modules for CNN training, including `soft_dice_loss` (filtering clean samples) and `CombinedBCEDiceLoss` supporting `pos_weight` and valid-pixel masking.
-- `detector/cnn/infer.py`: Inference and spatial cropping utilities (`pad_to_multiple`, `crop_to_original`, `filter_min_area`, `compute_top_k_mean`, `predict_mask`, `predict_from_probs`) ensuring predictions are strictly unpadded before decision or metric computation, with compound image-plus-mask filtering.
+- `detector/cnn/infer.py`: Inference and spatial cropping utilities (`pad_to_multiple`, `crop_to_original`, `filter_min_area`, `compute_top_k_mean`, `predict_mask`, `predict_from_probs`, `load_cnn_model`, `load_cnn_thresholds`, `predict_cnn`, `predict`) providing a standardized predict interface matching DCT and SIFT conventions (returns binary mask, image score, region bounding boxes) with locked YAML threshold lookup, device caching, and padding isolation.
 - `detector/cnn/selection.py`: Validation threshold and area sweep and checkpoint selection logic (`sweep_thresholds`, `is_better_checkpoint`, `load_checkpoint`, `wilson_ci`) prioritizing recall at <= 1% FAR over a 3D (s x tau x min_area) grid with lowest max-FAR fallback, Wilson 95% confidence intervals, and PyTorch 2.6+ `weights_only=False` support. Enforces strict nonzero recall for budget satisfaction.
 
 ## Evaluation and Utility Scripts (`scripts/`)
@@ -80,6 +80,7 @@ Summary of files in the Doppel repository:
 
 ## Automated Test Suite (`tests/`)
 - `tests/test_checkpoint_selection.py`: Unit tests verifying threshold sweep, checkpoint selection logic (cold start, ROC AUC fallback, budget transition, budget competition), and cache provenance verification.
+- `tests/test_cnn_infer.py`: Unit tests verifying standardized CNN prediction interface (`predict_cnn`, `predict`), YAML threshold loading by domain and budget, memory model caching, padding isolation, gatekeeper suppression, and region box extraction.
 - `tests/test_cnn_models.py`: Unit tests verifying forward pass shapes, variable dimensions, valid-mask spatial boundary handling, gradient backpropagation, AMP fp16 compatibility, and `--ablate-corr` correlation ablation.
 - `tests/test_dice_loss.py`: Unit tests for soft Dice loss ensuring clean twins are excluded from Dice calculations, mixed perfect predictions yield near-zero loss, all-zero predictions yield high loss, and clean samples contribute zero gradient.
 - `tests/test_flip.py`: Unit tests validating flip coordinate mapping round-trips, boundary margins, and synthetic mirrored clone detection.

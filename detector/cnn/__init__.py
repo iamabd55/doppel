@@ -11,9 +11,13 @@ from detector.cnn.selection import is_better_checkpoint, load_checkpoint, sweep_
 from detector.cnn.infer import (
     crop_to_original,
     filter_min_area,
+    load_cnn_model,
+    load_cnn_thresholds,
     pad_to_multiple,
-    predict_mask,
+    predict,
+    predict_cnn,
     predict_from_probs,
+    predict_mask,
 )
 
 __all__ = [
@@ -30,4 +34,8 @@ __all__ = [
     "pad_to_multiple",
     "predict_mask",
     "predict_from_probs",
+    "load_cnn_model",
+    "load_cnn_thresholds",
+    "predict_cnn",
+    "predict",
 ]

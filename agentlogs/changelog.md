@@ -387,4 +387,20 @@ All notable changes to the Doppel repository are documented here.
   - Added unit test `test_cache_provenance_verification` in `tests/test_checkpoint_selection.py`. All 52 unit tests pass.
 - Strict evaluation protocol maintained: BioFors IDD test set and synthetic test set remain completely untouched (touch count: 0).
 
+### Added and Verified (Phase 4 Wrap-Up Step 2: Standardized Inference Interface)
+- Implemented standardized prediction interface in `detector/cnn/infer.py`:
+  - `load_cnn_thresholds`: reads locked thresholds from `configs/cnn_threshold.yaml` for specific domain tags ('Blot/Gel' vs 'Microscopy') and FAR budgets (1.0%, 1.5%, 2.0%, 3.0%), with numerical distance fallback.
+  - `load_cnn_model`: loads and caches models on target device (CPU default) in eval mode, reusing instances across predictions.
+  - `predict_cnn` (and alias `predict`): accepts arbitrary images (RGB or grayscale), applies dynamic zero-padding to 32-pixel boundaries, runs forward pass, strictly unpads/crops back to native resolution, filters by pixel threshold and minimum connected component area, enforces image head gatekeeper suppression, and returns `(mask, image_score, regions)`.
+  - Output formats match DCT and SIFT: `mask` (uint8 array, 0 or 255), `image_score` (float in [0, 1]), and `regions` (list of bounding boxes `(x, y, w, h)`).
+- Exported new functions in `detector/cnn/__init__.py`.
+- Added comprehensive unit test suite in `tests/test_cnn_infer.py`:
+  - Tested threshold lookup for Blot/Gel and Microscopy across budgets.
+  - Tested model instance caching.
+  - Tested positive detection output shapes, value ranges, and bounding box coordinates.
+  - Tested gatekeeper suppression (image head negative completely zeros mask).
+  - Tested padding isolation on odd non-multiple dimensions (e.g. 135x217).
+  - All 59 unit tests pass. Zero em dashes across codebase.
+
+
 
