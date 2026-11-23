@@ -18,5 +18,5 @@
 | Step B | Validation evaluation and ablation hooks | COMPLETED | 2026-11-22 | Threshold sweep subject to 1% FAR on 1,000 pristine panels and clean twins; `scripts/eval_cnn.py` with slice breakdowns; `--ablate-corr` hook. |
 | Step C | Google Colab training notebook | COMPLETED | 2026-11-22 | `notebooks/phase4_train.ipynb` (13 cells) and `scripts/select_threshold.py`. Code archive rebuilt (`data/doppel_code.zip`, 60 KB). |
 | Step C.2 | CorrNet v2 & FA Diagnostics | COMPLETED | 2026-11-23 | Partner-guaranteed crops (100% pairs complete), ResNetCorrNet v2 with `--image-head`, lowest max-FAR fallback, extended diagnostic suite, and 15-cell notebook. |
-| Step D | Validation threshold selection | PENDING | - | Run in notebook on synthetic VAL + 4,039 pristine panels to write `configs/cnn_threshold.yaml`. |
+| Step D | Validation threshold selection | COMPLETED | 2026-11-23 | Executed on CPU on synthetic VAL (1,000 images) + all 4,039 pristine panels. Locked configs/cnn_threshold.yaml. |
 | Step E | One-shot final real evaluation | PENDING | - | Touch count 1: evaluate locked models on synthetic test and real BioFors IDD test after user approval. |

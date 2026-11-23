@@ -80,12 +80,17 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 4 CorrNet v2 Multi-Budget Sweep, Per-Class Operating Points, and FA Diagnostics Complete:**
-- **Multi-Budget Sweeps (`--budgets`):** Added `--budgets` (default: 0.01 0.02 0.03) to `scripts/rescore_checkpoints.py` and `scripts/select_threshold.py`. Evaluates each budget independently, selecting operating points maximizing recall subject to clean and pristine FAR <= budget with strict `recall > 1e-5` enforcement.
-- **Per-Class Operating Points (Blot/Gel vs Microscopy):** Added domain-stratified sweeping in `select_threshold.py` and `rescore_checkpoints.py`. Generates side-by-side formatted comparison tables across all budgets with 95% Wilson confidence intervals. Writes structured `configs/cnn_threshold.yaml` containing root parameters, `overall`, `per_class` (blot_gel, microscopy), and full multi-budget target specifications. Documented assumption that panel domain is known at test time.
-- **Enhanced False Alarm Diagnostics (`scripts/diagnose_fa.py`):** Extended tau grid with 0.75, 0.80, 0.85, fixed missing `'moderate'` degradation tier breakdown, and added image-head compound decision rule evaluation: coarse multi-(s, tau, area) operating table and conditioned FAR grids at `s >= 0.80`.
-- **Git Commit Provenance:** Packaged `COMMIT` file containing exact git hash into `data/doppel_code.zip` via `scripts/make_colab_code_zip.sh`. Updated `train_cnn.py` and `diagnose_fa.py` to check `REPO_ROOT / "COMMIT"` so Colab execution preserves commit provenance instead of displaying "unknown".
-- **Dry-Run & Verification:** Extended `scripts/dryrun_notebook.py` to 9 steps (validating `select_threshold.py` alongside `rescore_checkpoints.py`). Rebuilt `notebooks/phase4_train.ipynb` and `data/doppel_code.zip` (88 KB). All unit tests pass. Zero em dashes.
+**Phase 4 Wrap-Up Step 1 (Thresholds Selection) Complete; Ready for Step 2 (Inference):**
+- **Threshold Selection (`scripts/select_threshold.py`):** Executed once on CPU using `checkpoints/corr_v2/last.pt` on all 4,039 held-out pristine panels and 1,000 synthetic validation images (500 clean twins, 500 forged).
+- **Prediction Caching:** Cached per-image outputs to `checkpoints/corr_v2/val_pristine_preds.npz` (57.2 KB), enabling instant (<4s) full grid sweeps without recomputing neural network forward passes.
+- **Operating Points:** Evaluated compound decision rule (s x tau x min_area) across FAR budgets (1.0%, 1.5%, 2.0%, 3.0%) for Overall, Blot/Gel, and Microscopy with 95% Wilson confidence intervals.
+  - Primary 1.0% Budget:
+    - Overall: Recall 51.4% [47.0-55.8], s=0.99, tau=0.70, area=25 px (Synth Clean FAR: 1.00%, Real Pristine FAR: 0.69%)
+    - Blot/Gel: Recall 68.7% [62.7-74.1], s=0.95, tau=0.30, area=25 px (Synth Clean FAR: 0.79%, Real Pristine FAR: 0.86%)
+    - Microscopy: Recall 23.8% [18.9-29.5], s=0.99, tau=0.30, area=1600 px (Synth Clean FAR: 1.21%, Real Pristine FAR: 0.55%, lowest max FAR fallback)
+- **Configuration Locked:** Exported locked operating parameters into `configs/cnn_threshold.yaml`.
+- **Test Integrity:** BioFors IDD test set and synthetic test set strictly untouched (touch count: 0).
+- **Next Step:** Step 2: Inference (`detector/cnn/infer.py`) standardized predict interface matching DCT and SIFT detectors.
 
 (Update this line when a step finishes.)
 

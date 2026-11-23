@@ -6,6 +6,7 @@ Summary of files in the Doppel repository:
 - `configs/synthetic.yaml`: Centralized configuration for Phase 3 synthetic generation, BioFors splits, degradation parameters, and frozen SIFT baseline values.
 - `configs/dct_adapted.yaml`: Locked adapted DCT parameters (min_votes=75, min_size=64) chosen strictly on synthetic VAL split to improve recall on narrow Western blot bands while bounding clean validation false alarms.
 - `configs/held_out_pristine_docs.json`: JSON record of the 177 held-out pristine BioFors train documents strictly excluded from the synthetic generator.
+- `configs/cnn_threshold.yaml`: Locked Phase 4 CNN operating thresholds across multiple FAR budgets (1.0%, 1.5%, 2.0%, 3.0%) for Overall, Blot/Gel, and Microscopy, tuned strictly on synthetic validation and all 4,039 pristine panels with zero test set leakage.
 - `docs/phase4_targets.md`: Pre-registered evaluation target metrics and methodological protocol for Phase 4 CNN training.
 - `docs/phase4_log.md`: Test set touch counter and step tracker for Phase 4 CNN training and evaluation.
 - `notebooks/colab_setup.md`: Guide and sanity check instructions for setting up the Google Colab training environment.
@@ -45,7 +46,7 @@ Summary of files in the Doppel repository:
 - `scripts/diagnose_fa.py`: False alarm diagnostic tool evaluating max probability, distance to edge, multi-tau grid FAR/recall with Wilson CIs, loss config inspection, moderate tier inclusion, image-head compound decision rule evaluation, class/tier breakdowns, and overlay figures of worst clean panels.
 - `scripts/dryrun_notebook.py`: End-to-end local dry-run script executing 9 steps (notebook code cells 4, 5, shortened 6, CorrNet v2 training, `--resume`, diagnose_fa, rescore_checkpoints, and select_threshold) in a temporary directory on CPU with `--subset 16` and verifying Drive syncing.
 - `scripts/rescore_checkpoints.py`: Post-hoc evaluation script scanning all checkpoints in a training run directory, evaluating multi-budget sweeps (0.01, 0.02, 0.03) and per-class breakdowns (Overall, Blot/Gel, Microscopy) with Wilson CIs.
-- `scripts/select_threshold.py`: Step D threshold selection script optimizing (s, pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels across multiple FAR budgets (0.01, 0.02, 0.03), generating side-by-side per-class operating points in `configs/cnn_threshold.yaml`.
+- `scripts/select_threshold.py`: Step D threshold selection script optimizing (s, pixel_threshold, min_area) on synthetic validation and 4,039 pristine panels across multiple FAR budgets (0.01, 0.015, 0.02, 0.03), caching per-image predictions to .npz for instant reruns, and generating side-by-side per-class operating points in `configs/cnn_threshold.yaml`.
 - `scripts/eval_cnn.py`: Detailed validation and ablation evaluation script breaking down performance by class, tier, transform type, copy count, and patch area, with `--ablate-corr` support.
 - `scripts/make_colab_code_zip.sh`: Archives repository code, tests, and training modules into `data/doppel_code.zip` for Colab upload.
 - `scripts/make_pristine_heldout_zip.py`: Packages 4,039 pristine panels from the 177 held-out train documents into `data/pristine_heldout.zip` for false alarm validation.

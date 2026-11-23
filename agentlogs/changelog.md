@@ -365,3 +365,21 @@ All notable changes to the Doppel repository are documented here.
 - Validation and Assets:
   - Extended `scripts/dryrun_notebook.py` to 9 steps (validating `select_threshold.py` alongside `rescore_checkpoints.py`).
   - Rebuilt `notebooks/phase4_train.ipynb` and `data/doppel_code.zip` (88 KB). Zero em dashes across repository.
+
+### Added and Executed (Phase 4 Wrap-Up Step 1: Locked Operating Thresholds Selection)
+- Executed `scripts/select_threshold.py` on CPU with `checkpoints/corr_v2/last.pt` (ResNetCorrNet v2 with image head) across:
+  - 1,000 synthetic validation images (500 clean twins, 500 forged images)
+  - All 4,039 held-out real pristine panels
+- Cached per-image outputs to `checkpoints/corr_v2/val_pristine_preds.npz` (57.2 KB) for instant (<4s) grid sweep re-runs.
+- Evaluated multi-budget sweep over candidate grids:
+  - tau in {0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95}
+  - s in {0.0, 0.3, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99}
+  - min_area in {0, 25, 32, 50, 64, 100, 150, 200, 300, 400, 500, 800, 1200, 1600}
+- Generated side-by-side operating points across FAR budgets 1.0%, 1.5%, 2.0%, and 3.0% for Overall, Blot/Gel, and Microscopy with 95% Wilson confidence intervals:
+  - Primary 1.0% Budget:
+    - Overall: Recall 51.4% [47.0-55.8], s=0.99, tau=0.70, area=25 px (Synth Clean FAR: 1.00%, Real Pristine FAR: 0.69%)
+    - Blot/Gel: Recall 68.7% [62.7-74.1], s=0.95, tau=0.30, area=25 px (Synth Clean FAR: 0.79%, Real Pristine FAR: 0.86%)
+    - Microscopy: Recall 23.8% [18.9-29.5], s=0.99, tau=0.30, area=1600 px (Synth Clean FAR: 1.21%, Real Pristine FAR: 0.55%, fallback point)
+- Written locked threshold configuration to `configs/cnn_threshold.yaml`.
+- Strict evaluation protocol maintained: BioFors IDD test set and synthetic test set remain completely untouched (touch count: 0).
+
