@@ -127,7 +127,7 @@ cells.append(nbf.v4.new_code_cell(cell3_code))
 
 # Cell 4: Loader Sanity Check
 cell4_code = """from torch.utils.data import DataLoader
-from detector.colab_dataset import ColabDoppelDataset
+from detector.colab_dataset import ColabDoppelDataset, colab_collate_fn
 
 train_manifest = SYNTH_DIR / 'train_manifest.csv'
 dataset_sanity = ColabDoppelDataset(
@@ -140,7 +140,7 @@ dataset_sanity = ColabDoppelDataset(
     seed=42,
 )
 
-loader_sanity = DataLoader(dataset_sanity, batch_size=8, shuffle=True)
+loader_sanity = DataLoader(dataset_sanity, batch_size=8, shuffle=True, collate_fn=colab_collate_fn)
 batch = next(iter(loader_sanity))
 
 imgs = batch["image"]
@@ -157,8 +157,9 @@ print(f"Batch valid_mask:  {vms.shape} (dtype: {vms.dtype})")
 print(f"Forged sample fraction in batch: {forged_frac*100:.1f}%")
 print(f"Mask pixel coverage: {mask_coverage*100:.2f}%")
 
-assert imgs.shape == (8, 3, 256, 256)
-assert masks.shape == (8, 1, 256, 256)
+assert imgs.shape[0] == 8 and imgs.shape[1] == 3 and imgs.shape[2] % 32 == 0 and imgs.shape[3] % 32 == 0
+assert masks.shape[0] == 8 and masks.shape[1] == 1 and masks.shape[2] == imgs.shape[2] and masks.shape[3] == imgs.shape[3]
+assert vms.shape == masks.shape
 print("[PASS] Dataset loader sanity checks passed.")
 """
 cells.append(nbf.v4.new_code_cell(cell4_code))
@@ -320,25 +321,94 @@ else:
 """
 cells.append(nbf.v4.new_code_cell(cell8_code))
 
+# Cell 8b: Train ResNetCorrNet v2 (with Image Head)
+cell8b_code = """corr_v2_drive_dir = DRIVE_RUNS_DIR / "corr_v2"
+corr_v2_local_dir = Path("/content/runs/corr_v2")
+corr_v2_local_dir.mkdir(parents=True, exist_ok=True)
+
+# Skip if finished run already exists on Drive
+if (corr_v2_drive_dir / "best.pt").exists() and (corr_v2_drive_dir / "train_log.csv").exists():
+    print(f"[INFO] Found completed CorrNet v2 run at {corr_v2_drive_dir}. Skipping training.")
+    shutil.copytree(corr_v2_drive_dir, corr_v2_local_dir, dirs_exist_ok=True)
+else:
+    print("[INFO] Starting full training for ResNetCorrNet v2 with Image Head (25 epochs, 120 min budget)...")
+    cmd_corr_v2 = [
+        "python3", str(DOPPEL_ROOT / "scripts" / "train_cnn.py"),
+        "--model", "corr",
+        "--image-head",
+        "--epochs", "25",
+        "--time-budget-min", "120",
+        "--batch-size", "16",
+        "--lr", "3e-4",
+        "--pos-weight", "1.0",
+        "--crop-size", "256",
+        "--data-dir", str(SYNTH_DIR),
+        "--pristine-zip", str(CONTENT_DATA / "pristine_heldout.zip"),
+        "--pristine-val-count", "1000",
+        "--save-every", "2",
+        "--out-dir", str(corr_v2_local_dir),
+        "--drive-sync-dir", str(corr_v2_drive_dir),
+        "--device", "cuda" if torch.cuda.is_available() else "cpu",
+    ]
+    subprocess.run(cmd_corr_v2, check=True)
+    print(f"[INFO] Syncing CorrNet v2 artifacts to {corr_v2_drive_dir}...")
+    shutil.copytree(corr_v2_local_dir, corr_v2_drive_dir, dirs_exist_ok=True)
+    print("[SUCCESS] CorrNet v2 training complete and saved to Google Drive.")
+
+# Run diagnostics on last.pt immediately
+diag_script = DOPPEL_ROOT / "scripts" / "diagnose_fa.py"
+val_csv = SYNTH_DIR / "val_manifest.csv"
+pristine_zip = CONTENT_DATA / "pristine_heldout.zip"
+diag_v2_out = corr_v2_drive_dir / "diagnostics"
+diag_v2_out.mkdir(parents=True, exist_ok=True)
+
+ckpt_v2_last = corr_v2_drive_dir / "last.pt"
+if not ckpt_v2_last.exists():
+    ckpt_v2_last = corr_v2_local_dir / "last.pt"
+
+if ckpt_v2_last.exists():
+    print("\\n================ Running False Alarm Diagnostics on CorrNet v2 last.pt ================")
+    !python3 "$diag_script" \\
+        --checkpoint "$ckpt_v2_last" \\
+        --model corr \\
+        --image-head \\
+        --val-manifest "$val_csv" \\
+        --data-dir "$CONTENT_DATA" \\
+        --pristine-zip "$pristine_zip" \\
+        --pristine-subset 1000 \\
+        --out-dir "$diag_v2_out"
+
+    worst_fig = diag_v2_out / "worst_clean_panels.png"
+    if worst_fig.exists():
+        from IPython.display import Image, display
+        print("\\nOverlay figure of 12 worst clean panels (CorrNet v2):")
+        display(Image(filename=str(worst_fig)))
+"""
+cells.append(nbf.v4.new_code_cell(cell8b_code))
+
 # Cell 9: Resume Cell
 cell9_code = """# Instructions for Resuming after Disconnection:
 # If session disconnected mid-run:
 # 1. Run Cells 1-3 to remount Drive and setup /content data.
-# 2. Set RESUME_MODEL to 'unet' or 'corr'.
+# 2. Set RESUME_MODEL to 'corr_v2', 'corr', or 'unet'.
 # 3. Execute this cell to resume training from the latest checkpoint on Drive.
 
-RESUME_MODEL = "corr"  # or 'unet'
-resume_ckpt = DRIVE_RUNS_DIR / f"{RESUME_MODEL}_run" / "last.pt"
+RESUME_MODEL = "corr_v2"  # 'corr_v2', 'corr', or 'unet'
+run_dir_name = "corr_v2" if RESUME_MODEL == "corr_v2" else f"{RESUME_MODEL}_run"
+resume_ckpt = DRIVE_RUNS_DIR / run_dir_name / "last.pt"
 
 if resume_ckpt.exists():
     print(f"[INFO] Resuming {RESUME_MODEL} from {resume_ckpt}...")
-    local_resume_dir = Path(f"/content/runs/{RESUME_MODEL}_run")
+    local_resume_dir = Path(f"/content/runs/{run_dir_name}")
     local_resume_dir.mkdir(parents=True, exist_ok=True)
 
     cmd_resume = [
         "python3", str(DOPPEL_ROOT / "scripts" / "train_cnn.py"),
-        "--model", RESUME_MODEL,
+        "--model", "corr",
+        "--image-head",
+        "--pos-weight", "1.0",
         "--epochs", "25",
+        "--time-budget-min", "120",
         "--batch-size", "16",
         "--lr", "3e-4",
         "--crop-size", "256",
@@ -348,11 +418,11 @@ if resume_ckpt.exists():
         "--pristine-val-count", "1000",
         "--save-every", "2",
         "--out-dir", str(local_resume_dir),
-        "--drive-sync-dir", str(DRIVE_RUNS_DIR / f"{RESUME_MODEL}_run"),
+        "--drive-sync-dir", str(DRIVE_RUNS_DIR / run_dir_name),
         "--device", "cuda" if torch.cuda.is_available() else "cpu",
     ]
     subprocess.run(cmd_resume, check=True)
-    shutil.copytree(local_resume_dir, DRIVE_RUNS_DIR / f"{RESUME_MODEL}_run", dirs_exist_ok=True)
+    shutil.copytree(local_resume_dir, DRIVE_RUNS_DIR / run_dir_name, dirs_exist_ok=True)
     print("[SUCCESS] Resumed training finished successfully.")
 else:
     print(f"[INFO] No existing checkpoint found at {resume_ckpt} to resume.")
@@ -363,11 +433,17 @@ cells.append(nbf.v4.new_code_cell(cell9_code))
 cell10_diag_code = """diag_script = DOPPEL_ROOT / "scripts" / "diagnose_fa.py"
 val_csv = SYNTH_DIR / "val_manifest.csv"
 pristine_zip = CONTENT_DATA / "pristine_heldout.zip"
-diag_out_dir = DRIVE_RUNS_DIR / "corr_run" / "diagnostics"
+diag_out_dir = DRIVE_RUNS_DIR / "corr_v2" / "diagnostics"
+if not (DRIVE_RUNS_DIR / "corr_v2").exists():
+    diag_out_dir = DRIVE_RUNS_DIR / "corr_run" / "diagnostics"
 diag_out_dir.mkdir(parents=True, exist_ok=True)
 
 for ckpt_name in ["last.pt", "best.pt"]:
-    ckpt_path = DRIVE_RUNS_DIR / "corr_run" / ckpt_name
+    ckpt_path = DRIVE_RUNS_DIR / "corr_v2" / ckpt_name
+    if not ckpt_path.exists():
+        ckpt_path = DRIVE_RUNS_DIR / "corr_run" / ckpt_name
+    if not ckpt_path.exists():
+        ckpt_path = Path(f"/content/runs/corr_v2/{ckpt_name}")
     if not ckpt_path.exists():
         ckpt_path = Path(f"/content/runs/corr_run/{ckpt_name}")
 
@@ -469,7 +545,9 @@ cell11_code = """eval_script = DOPPEL_ROOT / "scripts" / "eval_cnn.py"
 val_csv = SYNTH_DIR / "val_manifest.csv"
 
 unet_ckpt = DRIVE_RUNS_DIR / "unet_run" / "best.pt"
-corr_ckpt = DRIVE_RUNS_DIR / "corr_run" / "best.pt"
+corr_ckpt = DRIVE_RUNS_DIR / "corr_v2" / "best.pt"
+if not corr_ckpt.exists():
+    corr_ckpt = DRIVE_RUNS_DIR / "corr_run" / "best.pt"
 
 unet_eval_csv = DRIVE_RUNS_DIR / "eval_unet.csv"
 corr_eval_csv = DRIVE_RUNS_DIR / "eval_corr.csv"
@@ -511,7 +589,9 @@ cells.append(nbf.v4.new_code_cell(cell11_code))
 
 # Cell 12: Threshold Selection Cell
 cell12_code = """select_script = DOPPEL_ROOT / "scripts" / "select_threshold.py"
-chosen_ckpt = DRIVE_RUNS_DIR / "corr_run" / "best.pt"
+chosen_ckpt = DRIVE_RUNS_DIR / "corr_v2" / "best.pt"
+if not chosen_ckpt.exists():
+    chosen_ckpt = DRIVE_RUNS_DIR / "corr_run" / "best.pt"
 out_yaml = DRIVE_DIR / "cnn_threshold.yaml"
 
 print(f"[INFO] Running threshold selection on {chosen_ckpt}...")

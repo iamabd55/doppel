@@ -43,7 +43,7 @@ class ConvBlock(nn.Module):
 class ResNetCorrNet(nn.Module):
     """Self-correlation copy-move detector with ResNet-18 backbone."""
 
-    def __init__(self, pretrained: bool = True):
+    def __init__(self, pretrained: bool = True, image_head: bool = False):
         super().__init__()
         weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
         base = resnet18(weights=weights)
@@ -65,6 +65,12 @@ class ResNetCorrNet(nn.Module):
         self.layer1 = base.layer1  # Stride 4, out 64
         self.layer2 = base.layer2  # Stride 8, out 128
         self.layer3 = base.layer3  # Stride 16, out 256
+
+        self.image_head = image_head
+        if self.image_head:
+            self.layer4 = base.layer4  # Stride 32, out 512
+            # Pooled encoder features (512) + correlation statistics (8) -> 1 image-level logit
+            self.image_head_fc = nn.Linear(512 + 8, 1)
 
         # Correlation projection at stride 8
         self.proj = nn.Conv2d(128, 128, kernel_size=1, bias=False)
@@ -171,12 +177,35 @@ class ResNetCorrNet(nn.Module):
         topk_map = topk_vals.transpose(1, 2).view(B, 4, H8, W8)
         return topk_map
 
+    def _compute_corr_stats(
+        self,
+        corr_map: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compute summary statistics (max and mean of top-4 similarities) over valid positions."""
+        B, C, H8, W8 = corr_map.shape
+        if valid_mask is not None:
+            vm8 = F.interpolate(valid_mask.float(), size=(H8, W8), mode="nearest")
+            vm8_bool = vm8 > 0.5  # [B, 1, H8, W8]
+            # Set invalid positions to -1e4 for max
+            masked_for_max = torch.where(vm8_bool, corr_map, torch.full_like(corr_map, -1e4))
+            corr_max = torch.amax(masked_for_max, dim=(2, 3)).clamp(min=0.0)  # [B, 4]
+
+            masked_for_mean = torch.where(vm8_bool, corr_map, torch.zeros_like(corr_map))
+            valid_counts = torch.sum(vm8_bool.float(), dim=(2, 3)).clamp(min=1.0)  # [B, 1]
+            corr_mean = torch.sum(masked_for_mean, dim=(2, 3)) / valid_counts  # [B, 4]
+        else:
+            corr_max = torch.amax(corr_map, dim=(2, 3)).clamp(min=0.0)  # [B, 4]
+            corr_mean = torch.mean(corr_map, dim=(2, 3))  # [B, 4]
+
+        return torch.cat([corr_max, corr_mean], dim=1)  # [B, 8]
+
     def forward(
         self,
         image: torch.Tensor,
         valid_mask: Optional[torch.Tensor] = None,
         ablate_corr: bool = False,
-    ) -> torch.Tensor:
+    ):
         """Forward pass.
 
         Args:
@@ -185,7 +214,8 @@ class ResNetCorrNet(nn.Module):
             ablate_corr: If True, zeroes correlation channels at decoder input.
 
         Returns:
-            [B, 1, H, W] logits mask at input resolution.
+            If image_head is False: [B, 1, H, W] logits mask at input resolution.
+            If image_head is True: tuple of ([B, 1, H, W] logits mask, [B] image logit).
         """
         orig_h, orig_w = image.shape[2], image.shape[3]
 
@@ -234,5 +264,13 @@ class ResNetCorrNet(nn.Module):
             d2, size=(orig_h, orig_w), mode="bilinear", align_corners=False
         )
         logits = self.final_up(up0)
+
+        if self.image_head:
+            x4 = self.layer4(x3)
+            pooled_feat = F.adaptive_avg_pool2d(x4, (1, 1)).flatten(1)  # [B, 512]
+            corr_stats = self._compute_corr_stats(corr_map, valid_mask=valid_mask)  # [B, 8]
+            combined = torch.cat([pooled_feat, corr_stats], dim=1)  # [B, 520]
+            image_logit = self.image_head_fc(combined).squeeze(1)  # [B]
+            return logits, image_logit
 
         return logits

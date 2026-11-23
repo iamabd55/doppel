@@ -19,6 +19,7 @@ import pandas as pd
 
 try:
     import torch
+    import torch.nn.functional as F
     from torch.utils.data import Dataset
 except ImportError:
     # Graceful fallback for local CPU execution environments without PyTorch installed
@@ -109,73 +110,162 @@ class ColabDoppelDataset(Dataset):
         crop_h: int,
         crop_w: int,
         is_forged: bool,
+        mask_s: Optional[np.ndarray] = None,
+        mask_m: Optional[np.ndarray] = None,
         rng: Optional[np.random.Generator] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Crop or pad image, mask, and valid_mask to fixed (crop_h, crop_w) for training.
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, bool]:
+        """Extract crop guaranteeing both source and target partner presence for positive samples.
 
-        Configurable share of crops (pos_crop_prob, default 50%) contain forged pixels
-        by placing a randomly chosen forged pixel somewhere inside the crop window,
-        without forcing the crop to be centered on the forgery.
+        If a forged pair does not fit in (crop_h, crop_w), enlarges crop to union bounding
+        box plus margin (capped at 512, multiple of 32). If still incomplete, masks out
+        unpartnered regions and treats crop as clean.
         """
         if rng is None:
             rng = self.rng
         h, w = img.shape[:2]
 
-        # 1. Zero-pad if image is smaller than target crop
-        if h < crop_h or w < crop_w:
-            pad_h = max(0, crop_h - h)
-            pad_w = max(0, crop_w - w)
-            top = pad_h // 2
-            bottom = pad_h - top
-            left = pad_w // 2
-            right = pad_w - left
+        attempt_pos = is_forged and (mask is not None) and (np.sum(mask) > 0) and (rng.random() < self.pos_crop_prob)
 
+        if attempt_pos and (mask_s is not None) and (mask_m is not None):
+            ys_s, xs_s = np.where(mask_s > 0)
+            ys_m, xs_m = np.where(mask_m > 0)
+
+            if len(ys_s) > 0 and len(ys_m) > 0:
+                # Find connected components of target mask M to select a target partner
+                num_m, labels_m, stats_m, _ = cv2.connectedComponentsWithStats(
+                    (mask_m > 0).astype(np.uint8), connectivity=8
+                )
+                cand_targets = list(range(1, num_m)) if num_m > 1 else []
+                if cand_targets:
+                    chosen_t = int(rng.choice(cand_targets))
+                    t_ys, t_xs = np.where(labels_m == chosen_t)
+                else:
+                    t_ys, t_xs = ys_m, xs_m
+
+                # Union bounding box of source S and chosen target
+                u_y1 = min(int(ys_s.min()), int(t_ys.min()))
+                u_y2 = max(int(ys_s.max()), int(t_ys.max()))
+                u_x1 = min(int(xs_s.min()), int(t_xs.min()))
+                u_x2 = max(int(xs_s.max()), int(t_xs.max()))
+
+                req_h = u_y2 - u_y1 + 1
+                req_w = u_x2 - u_x1 + 1
+
+                margin = 32
+                target_h = max(crop_h, int(np.ceil((req_h + 2 * margin) / 32) * 32))
+                target_w = max(crop_w, int(np.ceil((req_w + 2 * margin) / 32) * 32))
+                target_h = min(512, target_h)
+                target_w = min(512, target_w)
+
+                # Pad image and masks if smaller than target crop
+                pad_h = max(0, target_h - h)
+                pad_w = max(0, target_w - w)
+                top = pad_h // 2
+                bottom = pad_h - top
+                left = pad_w // 2
+                right = pad_w - left
+
+                if pad_h > 0 or pad_w > 0:
+                    if img.ndim == 3:
+                        c_img_src = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+                    else:
+                        c_img_src = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+                    c_mask_src = cv2.copyMakeBorder(mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+                    c_vm_src = cv2.copyMakeBorder(valid_mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+                    c_s_src = cv2.copyMakeBorder(mask_s, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+                    c_m_src = cv2.copyMakeBorder(mask_m, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+                    adj_u_y1 = u_y1 + top
+                    adj_u_y2 = u_y2 + top
+                    adj_u_x1 = u_x1 + left
+                    adj_u_x2 = u_x2 + left
+                else:
+                    c_img_src = img
+                    c_mask_src = mask
+                    c_vm_src = valid_mask
+                    c_s_src = mask_s
+                    c_m_src = mask_m
+                    adj_u_y1, adj_u_y2 = u_y1, u_y2
+                    adj_u_x1, adj_u_x2 = u_x1, u_x2
+
+                cur_h, cur_w = c_img_src.shape[:2]
+                max_y = cur_h - target_h
+                max_x = cur_w - target_w
+
+                min_sy = max(0, adj_u_y2 - target_h)
+                max_sy = min(adj_u_y1, max_y)
+                sy = int(rng.integers(min_sy, max_sy + 1)) if min_sy <= max_sy else int(rng.integers(0, max_y + 1))
+
+                min_sx = max(0, adj_u_x2 - target_w)
+                max_sx = min(adj_u_x1, max_x)
+                sx = int(rng.integers(min_sx, max_sx + 1)) if min_sx <= max_sx else int(rng.integers(0, max_x + 1))
+
+                crop_img = c_img_src[sy : sy + target_h, sx : sx + target_w]
+                crop_mask = c_mask_src[sy : sy + target_h, sx : sx + target_w].copy()
+                crop_vm = c_vm_src[sy : sy + target_h, sx : sx + target_w]
+                crop_s = c_s_src[sy : sy + target_h, sx : sx + target_w]
+                crop_m = c_m_src[sy : sy + target_h, sx : sx + target_w]
+
+                has_s = np.sum(crop_s > 0) > 0
+                has_m = np.sum(crop_m > 0) > 0
+
+                if has_s and has_m:
+                    return crop_img, crop_mask, crop_vm, True
+                else:
+                    # Partner missing: zero out unpartnered pixels and treat as clean
+                    crop_mask[:] = 0
+                    return crop_img, crop_mask, crop_vm, False
+
+        # Fallback / Uniform Random Crop
+        target_h, target_w = crop_h, crop_w
+        pad_h = max(0, target_h - h)
+        pad_w = max(0, target_w - w)
+        top = pad_h // 2
+        bottom = pad_h - top
+        left = pad_w // 2
+        right = pad_w - left
+
+        if pad_h > 0 or pad_w > 0:
             if img.ndim == 3:
-                img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+                c_img_src = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
             else:
-                img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-            mask = cv2.copyMakeBorder(mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-            valid_mask = cv2.copyMakeBorder(valid_mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
-            h, w = img.shape[:2]
-
-        # 2. Extract crop
-        if h == crop_h and w == crop_w:
-            return img, mask, valid_mask
-
-        max_y = h - crop_h
-        max_x = w - crop_w
-
-        if is_forged and np.sum(mask) > 0 and (rng.random() < self.pos_crop_prob):
-            # Sample a crop that contains forged pixels, but NOT always centered
-            ys, xs = np.where(mask > 0)
-            if len(ys) > 0:
-                rand_idx = int(rng.integers(0, len(ys)))
-                yf = ys[rand_idx]
-                xf = xs[rand_idx]
-
-                min_y = max(0, yf - crop_h + 1)
-                max_y_cand = min(yf, max_y)
-                start_y = int(rng.integers(min_y, max_y_cand + 1)) if min_y <= max_y_cand else int(rng.integers(0, max_y + 1))
-
-                min_x = max(0, xf - crop_w + 1)
-                max_x_cand = min(xf, max_x)
-                start_x = int(rng.integers(min_x, max_x_cand + 1)) if min_x <= max_x_cand else int(rng.integers(0, max_x + 1))
-            else:
-                start_y = int(rng.integers(0, max_y + 1))
-                start_x = int(rng.integers(0, max_x + 1))
+                c_img_src = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+            c_mask_src = cv2.copyMakeBorder(mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+            c_vm_src = cv2.copyMakeBorder(valid_mask, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+            c_s_src = cv2.copyMakeBorder(mask_s, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0) if mask_s is not None else None
+            c_m_src = cv2.copyMakeBorder(mask_m, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0) if mask_m is not None else None
         else:
-            # Completely uniform random crop
-            start_y = int(rng.integers(0, max_y + 1))
-            start_x = int(rng.integers(0, max_x + 1))
+            c_img_src = img
+            c_mask_src = mask
+            c_vm_src = valid_mask
+            c_s_src = mask_s
+            c_m_src = mask_m
 
-        end_y = start_y + crop_h
-        end_x = start_x + crop_w
+        cur_h, cur_w = c_img_src.shape[:2]
+        max_y = cur_h - target_h
+        max_x = cur_w - target_w
 
-        return (
-            img[start_y:end_y, start_x:end_x],
-            mask[start_y:end_y, start_x:end_x],
-            valid_mask[start_y:end_y, start_x:end_x],
-        )
+        sy = int(rng.integers(0, max_y + 1)) if max_y > 0 else 0
+        sx = int(rng.integers(0, max_x + 1)) if max_x > 0 else 0
+
+        crop_img = c_img_src[sy : sy + target_h, sx : sx + target_w]
+        crop_mask = c_mask_src[sy : sy + target_h, sx : sx + target_w].copy()
+        crop_vm = c_vm_src[sy : sy + target_h, sx : sx + target_w]
+
+        if is_forged and (c_s_src is not None) and (c_m_src is not None):
+            crop_s = c_s_src[sy : sy + target_h, sx : sx + target_w]
+            crop_m = c_m_src[sy : sy + target_h, sx : sx + target_w]
+            has_s = np.sum(crop_s > 0) > 0
+            has_m = np.sum(crop_m > 0) > 0
+            if has_s and has_m:
+                return crop_img, crop_mask, crop_vm, True
+            else:
+                crop_mask[:] = 0
+                return crop_img, crop_mask, crop_vm, False
+        elif is_forged and np.sum(crop_mask) > 0:
+            return crop_img, crop_mask, crop_vm, True
+        else:
+            crop_mask[:] = 0
+            return crop_img, crop_mask, crop_vm, False
 
     def _joint_augment(
         self, img: np.ndarray, mask: np.ndarray, valid_mask: np.ndarray
@@ -239,10 +329,41 @@ class ColabDoppelDataset(Dataset):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         is_forged = bool(row["is_forged"])
+        mask_s = None
+        mask_m = None
+
         if is_forged and a_path and a_path.exists():
             mask = cv2.imread(str(a_path), cv2.IMREAD_GRAYSCALE)
             if mask is None:
                 mask = np.zeros(img.shape[:2], dtype=np.uint8)
+
+            if self.split == "train":
+                s_rel = Path(row["path_S"]) if "path_S" in row and pd.notna(row["path_S"]) else None
+                m_rel = Path(row["path_M"]) if "path_M" in row and pd.notna(row["path_M"]) else None
+
+                if s_rel is not None:
+                    candidates_s = [
+                        self.images_dir / s_rel,
+                        self.images_dir.parent / s_rel,
+                        self.manifest_path.parent / s_rel,
+                        self.manifest_path.parent / self.split / s_rel.name,
+                        self.manifest_path.parent / s_rel.name,
+                    ]
+                    s_path = next((p for p in candidates_s if p.exists()), None)
+                    if s_path:
+                        mask_s = cv2.imread(str(s_path), cv2.IMREAD_GRAYSCALE)
+
+                if m_rel is not None:
+                    candidates_m = [
+                        self.images_dir / m_rel,
+                        self.images_dir.parent / m_rel,
+                        self.manifest_path.parent / m_rel,
+                        self.manifest_path.parent / self.split / m_rel.name,
+                        self.manifest_path.parent / m_rel.name,
+                    ]
+                    m_path = next((p for p in candidates_m if p.exists()), None)
+                    if m_path:
+                        mask_m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
         else:
             mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
@@ -252,11 +373,20 @@ class ColabDoppelDataset(Dataset):
         pad_box = (0, 0, 0, 0)
 
         # 1. Cropping or padding:
-        # Train uses random crops (with 50% positive coverage); Val always returns full image with padding only
+        # Train uses random crops (with guaranteed source/target partner pairs for positives);
+        # Val always returns full image with padding only
         if self.split == "train" and self.crop_size is not None:
             crop_rng = self.rng if self.augment else np.random.default_rng(self.seed + idx)
-            img, mask, valid_mask = self._crop_pair(
-                img, mask, valid_mask, self.crop_size[0], self.crop_size[1], is_forged, rng=crop_rng
+            img, mask, valid_mask, is_forged = self._crop_pair(
+                img,
+                mask,
+                valid_mask,
+                self.crop_size[0],
+                self.crop_size[1],
+                is_forged,
+                mask_s=mask_s,
+                mask_m=mask_m,
+                rng=crop_rng,
             )
         elif self.pad_multiple > 1:
             img, mask, valid_mask, pad_box = self._pad_to_multiple(
@@ -284,6 +414,8 @@ class ColabDoppelDataset(Dataset):
             "is_forged": is_forged,
             "degradation_level": row.get("degradation_level", "zero"),
             "transform_type": row.get("transform_type", "none"),
+            "num_targets": int(row.get("num_targets", 1)),
+            "is_multi_copy": bool(row.get("is_multi_copy", False)),
             "orig_h": orig_h,
             "orig_w": orig_w,
             "pad_top": pad_box[0],
@@ -317,3 +449,60 @@ def verify_splits_disjointness(train_dataset: ColabDoppelDataset, val_dataset: C
     if len(overlap) > 0:
         raise AssertionError(f"FATAL: Document leakage detected between train and val splits ({len(overlap)} overlapping docs: {list(overlap)[:5]}...)")
     print(f"[VERIFIED] Train ({len(train_dataset.doc_ids)} docs) and Val ({len(val_dataset.doc_ids)} docs) are strictly disjoint.")
+
+
+def colab_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Collate batch with variable image/mask spatial sizes by zero-padding to batch maximum multiple of 32."""
+    if not batch:
+        return {}
+
+    max_h = max(item["image"].shape[-2] for item in batch)
+    max_w = max(item["image"].shape[-1] for item in batch)
+
+    target_h = int(np.ceil(max_h / 32) * 32)
+    target_w = int(np.ceil(max_w / 32) * 32)
+
+    padded_images = []
+    padded_masks = []
+    padded_valid_masks = []
+    labels = []
+    metas = []
+
+    for item in batch:
+        img = item["image"]
+        mask = item["mask"]
+        vm = item["valid_mask"]
+        lbl = item["label"]
+        meta = item["meta"]
+
+        h, w = img.shape[-2:]
+        pad_h = target_h - h
+        pad_w = target_w - w
+
+        if pad_h > 0 or pad_w > 0:
+            top = pad_h // 2
+            bottom = pad_h - top
+            left = pad_w // 2
+            right = pad_w - left
+
+            img_p = F.pad(img, (left, right, top, bottom), value=0.0)
+            mask_p = F.pad(mask, (left, right, top, bottom), value=0.0)
+            vm_p = F.pad(vm, (left, right, top, bottom), value=0.0)
+        else:
+            img_p = img
+            mask_p = mask
+            vm_p = vm
+
+        padded_images.append(img_p)
+        padded_masks.append(mask_p)
+        padded_valid_masks.append(vm_p)
+        labels.append(lbl)
+        metas.append(meta)
+
+    return {
+        "image": torch.stack(padded_images, dim=0),
+        "mask": torch.stack(padded_masks, dim=0),
+        "valid_mask": torch.stack(padded_valid_masks, dim=0),
+        "label": torch.stack(labels, dim=0) if isinstance(labels[0], torch.Tensor) else torch.tensor(labels, dtype=torch.float32),
+        "meta": {k: [m[k] for m in metas] for k in metas[0].keys()},
+    }

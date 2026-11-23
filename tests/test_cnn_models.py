@@ -131,3 +131,26 @@ def test_padded_strip_negative_and_cropping():
     assert res_pos["max_prob"] == pytest.approx(0.95, rel=1e-3)
     assert res_pos["is_detected"] is True, "High activation inside image should trigger detection"
     assert np.sum(res_pos["pred_mask"]) == 400
+
+
+def test_corr_net_image_head():
+    """Verify CorrNet v2 image head output shapes and gradient flow."""
+    model = ResNetCorrNet(pretrained=False, image_head=True)
+    model.train()
+
+    x = torch.rand(2, 3, 64, 64, dtype=torch.float32, requires_grad=True)
+    vm = torch.ones(2, 1, 64, 64, dtype=torch.float32)
+    labels = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    pixel_logits, image_logits = model(x, valid_mask=vm)
+
+    assert pixel_logits.shape == (2, 1, 64, 64)
+    assert image_logits.shape == (2,)
+
+    # Backprop from image loss
+    img_loss = torch.nn.functional.binary_cross_entropy_with_logits(image_logits, labels)
+    img_loss.backward()
+
+    assert model.image_head_fc.weight.grad is not None
+    assert model.layer4[0].conv1.weight.grad is not None
+    assert model.conv1.weight.grad is not None

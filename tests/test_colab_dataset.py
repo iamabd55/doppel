@@ -11,7 +11,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from detector.colab_dataset import ColabDoppelDataset, verify_splits_disjointness
+from detector.colab_dataset import ColabDoppelDataset, colab_collate_fn, verify_splits_disjointness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,7 +30,7 @@ def test_colab_dataset_batch():
         seed=42,
     )
 
-    loader = DataLoader(train_ds, batch_size=16, shuffle=True)
+    loader = DataLoader(train_ds, batch_size=16, shuffle=True, collate_fn=colab_collate_fn)
     batch = next(iter(loader))
 
     images = batch["image"]
@@ -38,8 +38,11 @@ def test_colab_dataset_batch():
     labels = batch["label"]
 
     # 1. Shapes
-    assert images.shape == (16, 3, 256, 256), f"Unexpected image shape: {images.shape}"
-    assert masks.shape == (16, 1, 256, 256), f"Unexpected mask shape: {masks.shape}"
+    b, c, h, w = images.shape
+    assert b == 16 and c == 3, f"Unexpected image shape: {images.shape}"
+    assert h >= 256 and (h % 32 == 0), f"Height {h} not valid multiple of 32"
+    assert w >= 256 and (w % 32 == 0), f"Width {w} not valid multiple of 32"
+    assert masks.shape == (16, 1, h, w), f"Unexpected mask shape: {masks.shape}"
     assert labels.shape == (16,), f"Unexpected label shape: {labels.shape}"
 
     # 2. Dtypes

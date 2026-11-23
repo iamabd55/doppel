@@ -112,11 +112,18 @@ def predict_from_probs(
     orig_shape: Tuple[int, int],
     threshold: float = 0.5,
     min_area: int = 50,
+    image_prob: Optional[float] = None,
+    image_threshold: float = 0.5,
 ) -> Dict[str, Any]:
     """Process padded probability map into unpadded image decision and filtered mask.
 
     Crops predictions back to original dimensions before any thresholding,
     connected component analysis, or image-level decision.
+    Decision rule:
+      If image_prob is provided:
+        image positive if image_prob >= image_threshold AND predicted mask area >= min_area.
+      Else:
+        image positive if predicted mask area >= min_area.
     """
     probs_cropped = crop_to_original(probs_padded, pad_box, orig_shape)
 
@@ -125,7 +132,12 @@ def predict_from_probs(
 
     pred_bin = (probs_cropped >= threshold).astype(np.uint8)
     pred_mask = filter_min_area(pred_bin, min_area=min_area)
-    is_detected = bool(np.sum(pred_mask) > 0)
+    has_mask_hit = bool(np.sum(pred_mask) > 0)
+
+    if image_prob is not None:
+        is_detected = bool((image_prob >= image_threshold) and has_mask_hit)
+    else:
+        is_detected = has_mask_hit
 
     return {
         "is_detected": is_detected,
@@ -133,6 +145,7 @@ def predict_from_probs(
         "prob_map": probs_cropped,
         "max_prob": max_prob,
         "top100_mean": top100_mean,
+        "image_prob": image_prob,
     }
 
 
@@ -141,6 +154,7 @@ def predict_mask(
     image: np.ndarray,
     threshold: float = 0.5,
     min_area: int = 50,
+    image_threshold: float = 0.5,
     device: Union[str, torch.device] = "cpu",
     pad_multiple: int = 32,
     ablate_corr: bool = False,
@@ -156,17 +170,19 @@ def predict_mask(
         image: RGB or grayscale image as uint8 numpy array [H, W, 3] or [H, W].
         threshold: Decision threshold tau.
         min_area: Minimum connected component area in pixels.
+        image_threshold: Decision threshold s for image head (if present).
         device: Compute device.
         pad_multiple: Multiple to pad spatial dimensions to.
         ablate_corr: If True, ablate correlation module in ResNetCorrNet.
 
     Returns:
         Dict with keys:
-          'is_detected': bool indicating whether any component meets criteria.
+          'is_detected': bool indicating whether sample meets compound criteria.
           'pred_mask': uint8 binary mask of shape (orig_h, orig_w).
           'prob_map': float32 probability map of shape (orig_h, orig_w).
           'max_prob': float maximum probability inside unpadded region.
           'top100_mean': float mean probability of top-100 pixels.
+          'image_prob': float probability from image head (or None).
     """
     orig_h, orig_w = image.shape[:2]
     padded_img, valid_mask, pad_box = pad_to_multiple(image, multiple=pad_multiple)
@@ -190,9 +206,16 @@ def predict_mask(
     model.eval()
     with torch.no_grad():
         if hasattr(model, "forward") and "ablate_corr" in model.forward.__code__.co_varnames:
-            logits = model(img_tensor, valid_mask=vm_tensor, ablate_corr=ablate_corr)
+            out = model(img_tensor, valid_mask=vm_tensor, ablate_corr=ablate_corr)
         else:
-            logits = model(img_tensor, valid_mask=vm_tensor)
+            out = model(img_tensor, valid_mask=vm_tensor)
+
+        if isinstance(out, tuple):
+            logits, img_logit = out
+            image_prob = float(torch.sigmoid(img_logit)[0].item())
+        else:
+            logits = out
+            image_prob = None
 
         probs_padded = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
@@ -202,4 +225,6 @@ def predict_mask(
         orig_shape=(orig_h, orig_w),
         threshold=threshold,
         min_area=min_area,
+        image_prob=image_prob,
+        image_threshold=image_threshold,
     )

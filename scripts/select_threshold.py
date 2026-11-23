@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from detector.cnn import ResNetCorrNet, ResNetUNet
+from detector.cnn import ResNetCorrNet, ResNetUNet, load_checkpoint
 from detector.colab_dataset import ColabDoppelDataset
 
 
@@ -82,6 +82,7 @@ def parse_args(args: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Select optimal (threshold, min_area) operating point.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to best.pt checkpoint.")
     parser.add_argument("--model", type=str, choices=["unet", "corr"], default=None, help="Model architecture.")
+    parser.add_argument("--image-head", action="store_true", help="Force image head for CorrNet.")
     parser.add_argument("--val-manifest", type=str, default="data/synthetic/val_manifest.csv", help="Path to val_manifest.csv.")
     parser.add_argument("--data-dir", type=str, default="data", help="Root data directory.")
     parser.add_argument("--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine held-out zip.")
@@ -99,7 +100,7 @@ def main():
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = load_checkpoint(ckpt_path, map_location=device)
     config = ckpt.get("config", {})
 
     model_type = args.model or config.get("model")
@@ -110,11 +111,15 @@ def main():
         else:
             model_type = "unet"
 
+    has_image_head = args.image_head or config.get("image_head", False) or any(
+        "image_head_fc" in k for k in ckpt.get("model_state_dict", {}).keys()
+    )
+
     print(f"[INFO] Evaluating model: {model_type} from {ckpt_path.name}")
     if model_type == "unet":
         model = ResNetUNet(pretrained=False)
     else:
-        model = ResNetCorrNet(pretrained=False)
+        model = ResNetCorrNet(pretrained=False, image_head=has_image_head)
 
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)
@@ -148,7 +153,14 @@ def main():
             valid_mask = batch["valid_mask"].to(device)
             is_forged = bool(batch["label"].item() > 0.5)
 
-            logits = model(img, valid_mask=valid_mask)
+            out = model(img, valid_mask=valid_mask)
+            if isinstance(out, tuple):
+                logits, img_logit = out
+                img_prob = float(torch.sigmoid(img_logit)[0].item())
+            else:
+                logits = out
+                img_prob = None
+
             probs = torch.sigmoid(logits)
 
             vm_bool = (valid_mask > 0.5)[0, 0].cpu().numpy()
@@ -172,6 +184,7 @@ def main():
                 "probs": probs_cropped,
                 "mask_gt": mask_gt_cropped,
                 "max_p": float(probs_cropped.max()) if probs_cropped.size > 0 else 0.0,
+                "image_prob": img_prob,
             })
 
     # 2. Compute prediction probability maps for pristine held-out panels
@@ -203,7 +216,14 @@ def main():
                 ).unsqueeze(0).to(device)
                 t_vm = torch.from_numpy(vm.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device)
 
-                logits = model(t_img, valid_mask=t_vm)
+                out_p = model(t_img, valid_mask=t_vm)
+                if isinstance(out_p, tuple):
+                    logits, img_logit = out_p
+                    p_img_prob = float(torch.sigmoid(img_logit)[0].item())
+                else:
+                    logits = out_p
+                    p_img_prob = None
+
                 probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
                 # Strict crop back to unpadded pristine panel resolution
@@ -213,6 +233,7 @@ def main():
                 pristine_preds.append({
                     "probs": probs_cropped,
                     "max_p": max_p,
+                    "image_prob": p_img_prob,
                 })
 
     forged_items = [p for p in val_preds if p["is_forged"]]
@@ -223,7 +244,8 @@ def main():
 
     print(f"[INFO] Val counts: {n_forged} forged, {n_clean} clean twins, {n_pristine} pristine panels.")
 
-    # 3. Grid search over thresholds and min_area
+    # 3. Grid search over image_thresholds (if present), thresholds, and min_area
+    candidate_s = [0.0, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95] if has_image_head else [0.0]
     candidate_thresholds = [round(t, 2) for t in np.linspace(0.10, 0.90, 17)]
     candidate_areas = [32, 50, 64, 100, 150, 200, 300, 500]
 
@@ -231,68 +253,80 @@ def main():
     best_recall = -1.0
     compliant_configs = []
 
-    print("[INFO] Sweeping (threshold, min_area) grid...")
-    for min_area in candidate_areas:
-        for tau in candidate_thresholds:
-            # Synthetic clean twins FAR
-            clean_flags = 0
-            for item in clean_items:
-                if item["max_p"] >= tau:
-                    pred_bin = (item["probs"] >= tau).astype(np.uint8)
-                    filt = filter_min_area(pred_bin, min_area=min_area)
-                    if np.sum(filt) > 0:
-                        clean_flags += 1
-            clean_far = clean_flags / n_clean if n_clean > 0 else 0.0
+    lowest_max_far = 2.0
+    fallback_config: Optional[Dict[str, Any]] = None
 
-            # Pristine panels FAR
-            pristine_flags = 0
-            if n_pristine > 0:
-                for item in pristine_preds:
-                    if item["max_p"] >= tau:
+    print("[INFO] Sweeping (image_threshold, threshold, min_area) grid...")
+    for s in candidate_s:
+        for min_area in candidate_areas:
+            for tau in candidate_thresholds:
+                # Synthetic clean twins FAR
+                clean_flags = 0
+                for item in clean_items:
+                    img_ok = True if s == 0.0 else (item.get("image_prob", 1.0) >= s)
+                    if img_ok and item["max_p"] >= tau:
                         pred_bin = (item["probs"] >= tau).astype(np.uint8)
                         filt = filter_min_area(pred_bin, min_area=min_area)
                         if np.sum(filt) > 0:
-                            pristine_flags += 1
-                pristine_far = pristine_flags / n_pristine
-            else:
-                pristine_far = 0.0
+                            clean_flags += 1
+                clean_far = clean_flags / n_clean if n_clean > 0 else 0.0
 
-            meets = (clean_far <= args.max_far) and (pristine_far <= args.max_far)
+                # Pristine panels FAR
+                pristine_flags = 0
+                if n_pristine > 0:
+                    for item in pristine_preds:
+                        img_ok = True if s == 0.0 else (item.get("image_prob", 1.0) >= s)
+                        if img_ok and item["max_p"] >= tau:
+                            pred_bin = (item["probs"] >= tau).astype(np.uint8)
+                            filt = filter_min_area(pred_bin, min_area=min_area)
+                            if np.sum(filt) > 0:
+                                pristine_flags += 1
+                    pristine_far = pristine_flags / n_pristine
+                else:
+                    pristine_far = 0.0
 
-            # Forged recall
-            forged_hits = 0
-            for item in forged_items:
-                if item["max_p"] >= tau:
-                    pred_bin = (item["probs"] >= tau).astype(np.uint8)
-                    filt = filter_min_area(pred_bin, min_area=min_area)
-                    if np.sum((filt > 0) & (item["mask_gt"] > 0)) > 0:
-                        forged_hits += 1
-            recall = forged_hits / n_forged if n_forged > 0 else 0.0
+                meets = (clean_far <= args.max_far) and (pristine_far <= args.max_far)
+                cur_max_far = max(clean_far, pristine_far)
 
-            entry = {
-                "threshold": tau,
-                "min_area": min_area,
-                "recall": recall,
-                "clean_far": clean_far,
-                "pristine_far": pristine_far,
-                "meets_budget": meets,
-            }
+                # Forged recall
+                forged_hits = 0
+                for item in forged_items:
+                    img_ok = True if s == 0.0 else (item.get("image_prob", 1.0) >= s)
+                    if img_ok and item["max_p"] >= tau:
+                        pred_bin = (item["probs"] >= tau).astype(np.uint8)
+                        filt = filter_min_area(pred_bin, min_area=min_area)
+                        if np.sum((filt > 0) & (item["mask_gt"] > 0)) > 0:
+                            forged_hits += 1
+                recall = forged_hits / n_forged if n_forged > 0 else 0.0
 
-            if meets:
-                compliant_configs.append(entry)
-                if recall > best_recall:
-                    best_recall = recall
-                    best_config = entry
+                entry = {
+                    "image_threshold": s,
+                    "threshold": tau,
+                    "min_area": min_area,
+                    "recall": recall,
+                    "clean_far": clean_far,
+                    "pristine_far": pristine_far,
+                    "meets_budget": meets,
+                }
+
+                if meets:
+                    compliant_configs.append(entry)
+                    if recall > best_recall:
+                        best_recall = recall
+                        best_config = entry
+                else:
+                    if cur_max_far < lowest_max_far - 1e-5:
+                        lowest_max_far = cur_max_far
+                        fallback_config = entry
+                    elif abs(cur_max_far - lowest_max_far) <= 1e-5:
+                        if (clean_far + pristine_far) < (fallback_config["clean_far"] + fallback_config["pristine_far"]):
+                            fallback_config = entry
 
     # Fallback if no configuration met the strict budget
     if best_config is None:
-        print("[WARNING] No grid point met the 1.0% FAR budget on both sets. Selecting minimum-error fallback.")
-        # Minimize sum of excess false alarms
-        sorted_configs = sorted(
-            candidate_thresholds,
-            key=lambda t: max(clean_far, pristine_far),
-        )
-        best_config = {
+        print("[WARNING] No grid point met the 1.0% FAR budget on both sets. Selecting lowest max-FAR fallback.")
+        best_config = fallback_config or {
+            "image_threshold": 0.0,
             "threshold": 0.50,
             "min_area": 50,
             "recall": 0.0,
@@ -304,6 +338,8 @@ def main():
     print("\n======================================================================")
     print("OPTIMAL CNN THRESHOLD CONFIGURATION SELECTED")
     print(f"Model: {model_type}")
+    if has_image_head:
+        print(f"Image threshold: {best_config.get('image_threshold', 0.0):.2f}")
     print(f"Pixel threshold: {best_config['threshold']:.2f}")
     print(f"Min area: {best_config['min_area']} px")
     print(f"Achieved Validation Recall: {best_config['recall']*100:.2f}%")
@@ -323,6 +359,7 @@ def main():
 
 model_type: "{model_type}"
 checkpoint_file: "{ckpt_path.name}"
+image_threshold: {best_config.get('image_threshold', 0.0)}
 pixel_threshold: {best_config['threshold']}
 min_area_pixels: {best_config['min_area']}
 

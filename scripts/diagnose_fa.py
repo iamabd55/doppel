@@ -7,14 +7,18 @@ Evaluates a given checkpoint on:
   3. Synthetic validation forged images (500 images)
 
 Outputs:
+  - Checkpoint training configuration and loss settings (pos_weight, etc.) from config.json
   - Max probability, predicted area at tau in {0.5, 0.7, 0.9}, and distance to image edge
-  - False alarm rate grid over tau {0.3, 0.5, 0.7, 0.9} x min_area {0, 25, 50, 100, 200, 400, 800} with Wilson 95% CIs
+  - False alarm rate grid over tau {0.3, 0.5, 0.7, 0.9, 0.95, 0.98} x min_area {0, 50, 100, 200, 400, 800, 1600} with Wilson 95% CIs
   - Recall grid on forged images over the same tau x min_area grid
+  - False alarm breakdowns: synthetic clean by class and degradation tier, pristine by class
+  - Recall breakdowns: synthetic forged by class, degradation tier, transform type, and multi-copy at tau 0.5 and 0.9
   - False alarm reduction when ignoring pixels within 8 px of the image edge
   - Overlay figure of the 12 worst clean panels (image + probability map) saved to disk
 """
 import argparse
 import csv
+import json
 import os
 import sys
 import zipfile
@@ -31,7 +35,7 @@ from torch.utils.data import DataLoader
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from detector.cnn import ResNetCorrNet, ResNetUNet
+from detector.cnn import ResNetCorrNet, ResNetUNet, load_checkpoint
 from detector.cnn.infer import compute_top_k_mean, crop_to_original, filter_min_area, pad_to_multiple
 from detector.colab_dataset import ColabDoppelDataset
 
@@ -48,31 +52,65 @@ def wilson_ci(k: int, n: int) -> Tuple[float, float]:
     return (max(0.0, center - margin), min(1.0, center + margin))
 
 
-def load_model(checkpoint_path: str, model_type: Optional[str] = None, device: str = "cpu") -> nn.Module:
-    """Load model from checkpoint."""
-    ckpt = torch.load(checkpoint_path, map_location=device)
+def load_model(checkpoint_path: str, model_type: Optional[str] = None, force_image_head: bool = False, device: str = "cpu") -> Tuple[nn.Module, Dict[str, Any], Dict[str, Any]]:
+    """Load model and full config dictionary from checkpoint and config.json."""
+    ckpt = load_checkpoint(checkpoint_path, map_location=device)
     state_dict = ckpt.get("model_state_dict", ckpt)
     cfg = ckpt.get("config", {})
+
+    # Check for accompanying config.json in checkpoint directory
+    cfg_file = Path(checkpoint_path).parent / "config.json"
+    if cfg_file.exists():
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                disk_cfg = json.load(f)
+                disk_cfg.update(cfg)
+                cfg = disk_cfg
+        except Exception as e:
+            print(f"[WARNING] Could not read {cfg_file}: {e}")
 
     if model_type is None:
         model_type = cfg.get("model")
         if model_type is None:
-            # Check keys
-            if any("corr_proj" in k for k in state_dict.keys()):
+            if any("corr_proj" in k for k in state_dict.keys()) or any("proj.weight" in k for k in state_dict.keys()):
                 model_type = "corr"
             else:
                 model_type = "unet"
 
+    has_image_head = bool(force_image_head or cfg.get("image_head", False) or any("image_head_fc" in k for k in state_dict.keys()))
+
     if model_type == "corr":
-        model = ResNetCorrNet(pretrained=False)
+        model = ResNetCorrNet(pretrained=False, image_head=has_image_head)
     else:
         model = ResNetUNet(pretrained=False)
 
     model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
-    print(f"[INFO] Loaded {model_type.upper()} model from {checkpoint_path}")
-    return model
+    print(f"[INFO] Loaded {model_type.upper()} model (image_head={has_image_head}) from {checkpoint_path}")
+    return model, cfg, ckpt
+
+
+def print_training_config(cfg: Dict[str, Any], ckpt: Dict[str, Any], checkpoint_path: str):
+    """Print loss settings and training configuration."""
+    print("\n" + "=" * 90)
+    print("CHECKPOINT TRAINING CONFIGURATION & LOSS SETTINGS")
+    print("=" * 90)
+    print(f"Checkpoint File:       {Path(checkpoint_path).name}")
+    print(f"Git Commit Hash:       {cfg.get('git_commit', 'unknown')}")
+    print(f"Model Architecture:    {cfg.get('model', 'unknown')}")
+    print(f"Image Head Enabled:    {cfg.get('image_head', False)}")
+    print(f"Loss pos_weight:       {cfg.get('pos_weight', 1.0)}")
+    print(f"BCE Weight:            {cfg.get('bce_weight', 1.0)}")
+    print(f"Dice Weight:           {cfg.get('dice_weight', 1.0)}")
+    print(f"Peak Learning Rate:    {cfg.get('lr', 'not specified')}")
+    print(f"Weight Decay:          {cfg.get('weight_decay', 'not specified')}")
+    print(f"Epochs Configured:     {cfg.get('epochs', 'not specified')}")
+    print(f"Checkpoint Epoch:      {ckpt.get('epoch', 'unknown')}")
+    if "best_checkpoint_eval" in ckpt and ckpt["best_checkpoint_eval"] is not None:
+        bce_info = ckpt["best_checkpoint_eval"]
+        print(f"Best Eval at Save:     recall={bce_info.get('recall', 0.0):.4f}, meets_budget={bce_info.get('meets_budget', False)}")
+    print("=" * 90 + "\n")
 
 
 def load_pristine_panels(pristine_zip_path: str, max_count: int = 1000, seed: int = 42) -> List[Dict[str, Any]]:
@@ -118,6 +156,7 @@ def parse_args(args: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description="Diagnose CNN false alarms and boundary effects.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint (.pt).")
     parser.add_argument("--model", type=str, choices=["unet", "corr"], default=None, help="Model type.")
+    parser.add_argument("--image-head", action="store_true", help="Force image head on for CorrNet.")
     parser.add_argument("--val-manifest", type=str, default="data/synthetic/val_manifest.csv", help="Path to val manifest.")
     parser.add_argument("--data-dir", type=str, default="data", help="Root data directory.")
     parser.add_argument("--val-subset", type=int, default=None, help="Optional subset of validation samples to evaluate.")
@@ -134,7 +173,8 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = load_model(args.checkpoint, model_type=args.model, device=args.device)
+    model, cfg, ckpt = load_model(args.checkpoint, model_type=args.model, force_image_head=args.image_head, device=args.device)
+    print_training_config(cfg, ckpt, args.checkpoint)
 
     # 1. Load Synthetic Validation dataset
     val_dataset = ColabDoppelDataset(
@@ -153,8 +193,8 @@ def main():
     # 2. Load Pristine Panels
     pristine_panels = load_pristine_panels(args.pristine_zip, max_count=args.pristine_subset, seed=42)
 
-    taus = [0.3, 0.5, 0.7, 0.9]
-    min_areas = [0, 25, 50, 100, 200, 400, 800]
+    taus = [0.3, 0.5, 0.7, 0.9, 0.95, 0.98]
+    min_areas = [0, 50, 100, 200, 400, 800, 1600]
 
     synth_clean_records: List[Dict[str, Any]] = []
     synth_forged_records: List[Dict[str, Any]] = []
@@ -168,7 +208,14 @@ def main():
             is_forged = bool(batch["label"].item() > 0.5)
             meta = {k: v[0] if isinstance(v, list) else v for k, v in batch["meta"].items()}
 
-            logits = model(image, valid_mask=valid_mask)
+            out = model(image, valid_mask=valid_mask)
+            if isinstance(out, tuple):
+                logits, img_logit = out
+                img_prob = float(torch.sigmoid(img_logit)[0].item())
+            else:
+                logits = out
+                img_prob = None
+
             probs = torch.sigmoid(logits)
 
             vm_bool = (valid_mask > 0.5)[0, 0].cpu().numpy()
@@ -212,7 +259,11 @@ def main():
             rec: Dict[str, Any] = {
                 "doc_id": str(meta.get("doc_id", "unknown")),
                 "class": str(meta.get("class", "unknown")),
+                "tier": str(meta.get("degradation_level", "zero")),
+                "transform_type": str(meta.get("transform_type", "none")),
+                "is_multi_copy": bool(meta.get("is_multi_copy", False) or int(meta.get("num_targets", 1)) > 1),
                 "is_forged": is_forged,
+                "image_prob": img_prob,
                 "max_prob": max_prob,
                 "dist_edge": dist_edge,
                 "area_05": area_05,
@@ -276,7 +327,14 @@ def main():
             t_img = torch.from_numpy(padded_img.transpose(2, 0, 1).astype(np.float32) / 255.0).unsqueeze(0).to(device)
             t_vm = torch.from_numpy(valid_mask.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device)
 
-            logits = model(t_img, valid_mask=t_vm)
+            out = model(t_img, valid_mask=t_vm)
+            if isinstance(out, tuple):
+                logits, img_logit = out
+                p_img_prob = float(torch.sigmoid(img_logit)[0].item())
+            else:
+                logits = out
+                p_img_prob = None
+
             probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
             probs_cropped = crop_to_original(probs, pad_box=pad_box, orig_shape=(h, w))
@@ -305,6 +363,7 @@ def main():
                 "doc_id": p_info.get("doc_id", "unknown"),
                 "class": p_info.get("class", "unknown"),
                 "is_forged": False,
+                "image_prob": p_img_prob,
                 "max_prob": max_prob,
                 "dist_edge": dist_edge,
                 "area_05": area_05,
@@ -354,15 +413,15 @@ def main():
 
     # 5. Print False Alarm Rate Grid (Synth Clean Twins)
     n_synth_clean = len(synth_clean_records)
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 105)
     print(f"FALSE ALARM RATE GRID: SYNTHETIC CLEAN TWINS (N = {n_synth_clean})")
     print("Format: FAR % [Wilson 95% CI]")
-    print("=" * 90)
-    header = f"{'tau':<6} | " + " | ".join(f"area>={a:<3}" for a in min_areas)
+    print("=" * 105)
+    header = f"{'tau':<6} | " + " | ".join(f"area>={a:<4}" for a in min_areas)
     print(header)
     print("-" * len(header))
     for tau in taus:
-        row_str = f"{tau:<6.1f} | "
+        row_str = f"{tau:<6.2f} | "
         cols = []
         for area in min_areas:
             count = sum(1 for r in synth_clean_records if r[f"flag_{tau}_{area}"])
@@ -373,14 +432,14 @@ def main():
 
     # 6. Print False Alarm Rate Grid (Real Pristine Panels)
     n_pristine = len(pristine_records)
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 105)
     print(f"FALSE ALARM RATE GRID: REAL PRISTINE PANELS (N = {n_pristine})")
     print("Format: FAR % [Wilson 95% CI]")
-    print("=" * 90)
+    print("=" * 105)
     print(header)
     print("-" * len(header))
     for tau in taus:
-        row_str = f"{tau:<6.1f} | "
+        row_str = f"{tau:<6.2f} | "
         cols = []
         for area in min_areas:
             count = sum(1 for r in pristine_records if r[f"flag_{tau}_{area}"])
@@ -391,14 +450,14 @@ def main():
 
     # 7. Print Recall Grid (Synthetic Forged Validation)
     n_forged = len(synth_forged_records)
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 105)
     print(f"RECALL GRID: SYNTHETIC FORGED IMAGES (N = {n_forged}, OVERLAP RULE)")
     print("Format: Recall % [Wilson 95% CI]")
-    print("=" * 90)
+    print("=" * 105)
     print(header)
     print("-" * len(header))
     for tau in taus:
-        row_str = f"{tau:<6.1f} | "
+        row_str = f"{tau:<6.2f} | "
         cols = []
         for area in min_areas:
             count = sum(1 for r in synth_forged_records if r[f"hit_{tau}_{area}"])
@@ -407,7 +466,81 @@ def main():
             cols.append(f"{rate:4.1f}% [{lo*100:4.1f}-{hi*100:4.1f}]")
         print(row_str + " | ".join(cols))
 
-    # 8. Print Edge Margin Analysis: False Alarms Disappearing with >8 px Margin
+    # 8. FALSE ALARM BREAKDOWNS (by class, degradation tier)
+    print("\n" + "=" * 105)
+    print("FALSE ALARM BREAKDOWNS (SYNTHETIC CLEAN & PRISTINE)")
+    print("=" * 105)
+    print(f"{'Dataset':<16} | {'Subgroup':<24} | {'N':<6} | {'FAR@0.5 (a=0)':<16} | {'FAR@0.5 (a=50)':<16} | {'FAR@0.9 (a=50)':<16}")
+    print("-" * 105)
+
+    # Synthetic clean by class
+    for cls in sorted(list(set(r["class"] for r in synth_clean_records))):
+        sub = [r for r in synth_clean_records if r["class"] == cls]
+        n_sub = len(sub)
+        if n_sub > 0:
+            c_05_0 = sum(1 for r in sub if r.get("flag_0.5_0", False))
+            c_05_50 = sum(1 for r in sub if r.get("flag_0.5_50", False))
+            c_09_50 = sum(1 for r in sub if r.get("flag_0.9_50", False))
+            print(f"{'Synth Clean':<16} | {('Class: ' + cls):<24} | {n_sub:<6d} | {c_05_0/n_sub*100:>5.1f}% [{wilson_ci(c_05_0, n_sub)[0]*100:.1f}-{wilson_ci(c_05_0, n_sub)[1]*100:.1f}] | {c_05_50/n_sub*100:>5.1f}% [{wilson_ci(c_05_50, n_sub)[0]*100:.1f}-{wilson_ci(c_05_50, n_sub)[1]*100:.1f}] | {c_09_50/n_sub*100:>5.1f}% [{wilson_ci(c_09_50, n_sub)[0]*100:.1f}-{wilson_ci(c_09_50, n_sub)[1]*100:.1f}]")
+
+    # Synthetic clean by degradation tier
+    for tier in ["zero", "light", "medium", "heavy"]:
+        sub = [r for r in synth_clean_records if r.get("tier") == tier]
+        n_sub = len(sub)
+        if n_sub > 0:
+            c_05_0 = sum(1 for r in sub if r.get("flag_0.5_0", False))
+            c_05_50 = sum(1 for r in sub if r.get("flag_0.5_50", False))
+            c_09_50 = sum(1 for r in sub if r.get("flag_0.9_50", False))
+            print(f"{'Synth Clean':<16} | {('Tier: ' + tier):<24} | {n_sub:<6d} | {c_05_0/n_sub*100:>5.1f}% [{wilson_ci(c_05_0, n_sub)[0]*100:.1f}-{wilson_ci(c_05_0, n_sub)[1]*100:.1f}] | {c_05_50/n_sub*100:>5.1f}% [{wilson_ci(c_05_50, n_sub)[0]*100:.1f}-{wilson_ci(c_05_50, n_sub)[1]*100:.1f}] | {c_09_50/n_sub*100:>5.1f}% [{wilson_ci(c_09_50, n_sub)[0]*100:.1f}-{wilson_ci(c_09_50, n_sub)[1]*100:.1f}]")
+
+    # Pristine by class
+    for cls in sorted(list(set(r["class"] for r in pristine_records))):
+        sub = [r for r in pristine_records if r["class"] == cls]
+        n_sub = len(sub)
+        if n_sub > 0:
+            c_05_0 = sum(1 for r in sub if r.get("flag_0.5_0", False))
+            c_05_50 = sum(1 for r in sub if r.get("flag_0.5_50", False))
+            c_09_50 = sum(1 for r in sub if r.get("flag_0.9_50", False))
+            print(f"{'Real Pristine':<16} | {('Class: ' + cls):<24} | {n_sub:<6d} | {c_05_0/n_sub*100:>5.1f}% [{wilson_ci(c_05_0, n_sub)[0]*100:.1f}-{wilson_ci(c_05_0, n_sub)[1]*100:.1f}] | {c_05_50/n_sub*100:>5.1f}% [{wilson_ci(c_05_50, n_sub)[0]*100:.1f}-{wilson_ci(c_05_50, n_sub)[1]*100:.1f}] | {c_09_50/n_sub*100:>5.1f}% [{wilson_ci(c_09_50, n_sub)[0]*100:.1f}-{wilson_ci(c_09_50, n_sub)[1]*100:.1f}]")
+
+    # 9. RECALL BREAKDOWNS (by class, tier, transform type, multi-copy at tau 0.5 and 0.9)
+    print("\n" + "=" * 105)
+    print("RECALL BREAKDOWNS ON SYNTHETIC FORGED IMAGES (OVERLAP RULE, min_area=50)")
+    print("=" * 105)
+    print(f"{'Dimension':<18} | {'Slice':<22} | {'N':<6} | {'Recall @ tau=0.5':<22} | {'Recall @ tau=0.9':<22}")
+    print("-" * 105)
+
+    def print_recall_slice(dim_name: str, slice_name: str, sub_records: List[Dict[str, Any]]):
+        n_s = len(sub_records)
+        if n_s == 0:
+            return
+        h_05 = sum(1 for r in sub_records if r.get("hit_0.5_50", False))
+        h_09 = sum(1 for r in sub_records if r.get("hit_0.9_50", False))
+        lo5, hi5 = wilson_ci(h_05, n_s)
+        lo9, hi9 = wilson_ci(h_09, n_s)
+        n_str = f"{n_s}{'*' if n_s < 30 else ''}"
+        print(f"{dim_name:<18} | {slice_name:<22} | {n_str:<6} | {h_05/n_s*100:>5.1f}% [{lo5*100:4.1f}-{hi5*100:4.1f}]      | {h_09/n_s*100:>5.1f}% [{lo9*100:4.1f}-{hi9*100:4.1f}]")
+
+    # Class
+    for cls in sorted(list(set(r["class"] for r in synth_forged_records))):
+        print_recall_slice("Class", cls, [r for r in synth_forged_records if r["class"] == cls])
+
+    # Degradation tier
+    for tier in ["zero", "light", "medium", "heavy"]:
+        print_recall_slice("Tier", tier, [r for r in synth_forged_records if r.get("tier") == tier])
+
+    # Transform type
+    for tt in sorted(list(set(r["transform_type"] for r in synth_forged_records))):
+        print_recall_slice("Transform", tt, [r for r in synth_forged_records if r.get("transform_type") == tt])
+
+    # Multi-copy
+    print_recall_slice("Multi-Copy", "single", [r for r in synth_forged_records if not r.get("is_multi_copy", False)])
+    print_recall_slice("Multi-Copy", "multi-copy", [r for r in synth_forged_records if r.get("is_multi_copy", False)])
+
+    print("-" * 105)
+    print("* N < 30 indicates small sample size.")
+
+    # 10. Print Edge Margin Analysis: False Alarms Disappearing with >8 px Margin
     print("\n" + "=" * 90)
     print("FALSE ALARMS DISAPPEARING WHEN EXCLUDING PIXELS WITHIN 8 PX OF IMAGE EDGE")
     print("Evaluated on all clean samples (Synth Clean + Pristine, N = %d)" % n_clean_total)
@@ -415,7 +548,7 @@ def main():
     margin_header = f"{'tau':<5} | {'min_area':<8} | {'Standard FA':<14} | {'Inner (>8px) FA':<16} | {'Disappeared':<12} | {'Reduction %':<12}"
     print(margin_header)
     print("-" * len(margin_header))
-    for tau in taus:
+    for tau in [0.3, 0.5, 0.7, 0.9]:
         for area in [0, 50, 100, 200, 400]:
             std_fa = sum(1 for r in all_clean if r[f"flag_{tau}_{area}"])
             inn_fa = sum(1 for r in all_clean if r[f"flag_inner_{tau}_{area}"])
@@ -423,9 +556,8 @@ def main():
             pct = (disappeared / std_fa * 100.0) if std_fa > 0 else 0.0
             print(f"{tau:<5.1f} | {area:<8d} | {std_fa:<14d} | {inn_fa:<16d} | {disappeared:<12d} | {pct:>10.1f}%")
 
-    # 9. Generate Overlay Figure of 12 Worst Clean Panels
+    # 11. Generate Overlay Figure of 12 Worst Clean Panels
     print("\n[INFO] Generating overlay figure of 12 worst clean panels...")
-    # Sort all clean records descending by max_prob
     worst_clean = sorted(all_clean, key=lambda r: r["max_prob"], reverse=True)[:12]
 
     fig, axes = plt.subplots(3, 4, figsize=(20, 14))
@@ -434,19 +566,18 @@ def main():
         img_rgb = r["image_rgb"]
         p_map = r["probs"]
 
-        # Normalize probability map to [0, 255] for colored heatmap
         heat = cv2.applyColorMap((p_map * 255.0).clip(0, 255).astype(np.uint8), cv2.COLORMAP_MAGMA)
         heat = cv2.cvtColor(heat, cv2.COLOR_BGR2RGB)
 
-        # Blend image and heatmap
         if img_rgb.shape[:2] == heat.shape[:2]:
             blended = cv2.addWeighted(img_rgb, 0.45, heat, 0.55, 0)
         else:
             blended = heat
 
+        img_p_str = f" | img_p: {r['image_prob']:.3f}" if r.get("image_prob") is not None else ""
         ax.imshow(blended)
         ax.set_title(
-            f"#{idx+1}: {r['class']} (doc: {r['doc_id'][:8]})\nmax_p: {r['max_prob']:.3f} | edge_dist: {r['dist_edge']}px\narea@0.5: {r['area_05']}px",
+            f"#{idx+1}: {r['class']} (doc: {r['doc_id'][:8]})\nmax_p: {r['max_prob']:.3f}{img_p_str} | edge_dist: {r['dist_edge']}px\narea@0.5: {r['area_05']}px",
             fontsize=9,
         )
         ax.axis("off")

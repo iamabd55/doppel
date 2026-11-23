@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from detector.cnn import ResNetCorrNet, ResNetUNet
+from detector.cnn import ResNetCorrNet, ResNetUNet, load_checkpoint
 from detector.colab_dataset import ColabDoppelDataset
 
 
@@ -172,6 +172,7 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine held-out zip.")
     parser.add_argument("--threshold", type=float, default=0.5, help="Pixel detection threshold.")
     parser.add_argument("--min-area", type=int, default=50, help="Minimum connected component area.")
+    parser.add_argument("--image-head", action="store_true", help="Force image head for CorrNet.")
     parser.add_argument("--ablate-corr", action="store_true", help="Zero out correlation channels at inference.")
     parser.add_argument("--out-csv", type=str, default=None, help="Optional output CSV path for slice results.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
@@ -186,7 +187,7 @@ def main():
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = load_checkpoint(ckpt_path, map_location=device)
     config = ckpt.get("config", {})
 
     # Detect model type if not explicitly supplied
@@ -198,6 +199,10 @@ def main():
         else:
             model_type = "unet"
 
+    has_image_head = args.image_head or config.get("image_head", False) or any(
+        "image_head_fc" in k for k in ckpt.get("model_state_dict", {}).keys()
+    )
+
     print(f"[INFO] Evaluating model: {model_type} from {ckpt_path.name}")
     if args.ablate_corr and model_type == "corr":
         print("[INFO] Ablation active: correlation channels are zeroed at inference.")
@@ -205,7 +210,7 @@ def main():
     if model_type == "unet":
         model = ResNetUNet(pretrained=False)
     else:
-        model = ResNetCorrNet(pretrained=False)
+        model = ResNetCorrNet(pretrained=False, image_head=has_image_head)
         if args.ablate_corr:
             model.ablate_corr = True
 
@@ -245,9 +250,16 @@ def main():
             meta = {k: v[0] if isinstance(v, list) else v for k, v in batch["meta"].items()}
 
             if model_type == "corr":
-                logits = model(img, valid_mask=valid_mask, ablate_corr=args.ablate_corr)
+                out = model(img, valid_mask=valid_mask, ablate_corr=args.ablate_corr)
             else:
-                logits = model(img, valid_mask=valid_mask)
+                out = model(img, valid_mask=valid_mask)
+
+            if isinstance(out, tuple):
+                logits, img_logit = out
+                img_prob = float(torch.sigmoid(img_logit)[0].item())
+            else:
+                logits = out
+                img_prob = None
 
             probs = torch.sigmoid(logits)
 

@@ -143,3 +143,78 @@ def test_sweep_thresholds_2d_grid():
     assert res["best_synth_far"] <= 0.01
     assert res["best_pristine_far"] <= 0.01
 
+
+def test_is_better_checkpoint_lowest_max_far_fallback():
+    """When no epoch passes the FAR budget, lowest max-FAR wins."""
+    # Epoch 1: synth_far 0.15, pristine_far 0.10 -> max_far = 0.15, ROC AUC 0.85
+    ckpt1 = {
+        "meets_budget": False,
+        "best_synth_far": 0.15,
+        "best_pristine_far": 0.10,
+        "roc_auc": 0.85,
+    }
+    # Epoch 2: synth_far 0.08, pristine_far 0.09 -> max_far = 0.09, ROC AUC 0.82
+    ckpt2 = {
+        "meets_budget": False,
+        "best_synth_far": 0.08,
+        "best_pristine_far": 0.09,
+        "roc_auc": 0.82,
+    }
+
+    # Ckpt2 has lower max-FAR (0.09 < 0.15), so it must beat Ckpt1 even though Ckpt1 had higher AUC
+    assert is_better_checkpoint(ckpt2, ckpt1) is True
+    assert is_better_checkpoint(ckpt1, ckpt2) is False
+
+
+def test_sweep_thresholds_3d_compound():
+    """Verify 3D grid sweep with image head probability s."""
+    # 100 clean, 100 pristine, 100 forged
+    # Suppose pixel alone has 10/100 FAR (fails).
+    # But filtering by image_prob >= 0.7 cuts FAR to 1/100 while keeping recall 0.65.
+    thresholds = [0.5]
+    min_areas = [50]
+    image_thresholds = [0.0, 0.7]
+
+    synth_clean = []
+    pristine = []
+    forged = []
+
+    for i in range(100):
+        # Clean: 10 images have high pixel activations, but only 1 has image_prob >= 0.7
+        c_prob = 0.85 if i == 0 else (0.4 if i < 10 else 0.1)
+        synth_clean.append({
+            "image_prob": c_prob,
+            "flag_0.5_50": i < 10,
+        })
+
+        p_prob = 0.80 if i == 0 else (0.3 if i < 8 else 0.05)
+        pristine.append({
+            "image_prob": p_prob,
+            "flag_0.5_50": i < 8,
+        })
+
+        # Forged: 65 have image_prob >= 0.7 and hit_0.5_50
+        f_prob = 0.90 if i < 65 else 0.2
+        forged.append({
+            "image_prob": f_prob,
+            "hit_0.5_50": i < 70,
+        })
+
+    res = sweep_thresholds(
+        forged,
+        synth_clean,
+        pristine,
+        thresholds=thresholds,
+        min_areas=min_areas,
+        image_thresholds=image_thresholds,
+        max_far=0.01,
+    )
+
+    assert res["meets_budget"] is True
+    assert res["best_image_threshold"] == 0.7
+    assert res["best_threshold"] == 0.5
+    assert res["best_min_area"] == 50
+    assert res["best_recall"] == 0.65
+    assert res["best_synth_far"] == 0.01
+    assert res["best_pristine_far"] == 0.01
+

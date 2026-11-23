@@ -1,6 +1,6 @@
 """Loss functions for CNN copy-move forgery detection."""
 
-from typing import Tuple
+from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -48,13 +48,13 @@ def soft_dice_loss(
 class CombinedBCEDiceLoss(nn.Module):
     """Combined BCE and soft Dice loss for copy-move segmentation.
 
-    BCE is computed over all pixels across all samples (both forged and clean).
+    BCE is computed over valid pixels across all samples (both forged and clean).
     Dice is computed only over samples with forged pixels.
     """
 
     def __init__(
         self,
-        pos_weight: float = 3.0,
+        pos_weight: float = 1.0,
         bce_weight: float = 1.0,
         dice_weight: float = 1.0,
         smooth: float = 1.0,
@@ -69,22 +69,33 @@ class CombinedBCEDiceLoss(nn.Module):
         self,
         logits: torch.Tensor,
         targets: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute total loss, BCE loss, and soft Dice loss.
 
         Args:
             logits: Predicted logits [B, 1, H, W]
             targets: Target binary masks [B, 1, H, W]
+            valid_mask: Optional binary mask of valid pixels [B, 1, H, W]
 
         Returns:
             Tuple of (total_loss, bce_loss, dice_loss)
         """
         pos_weight_tensor = logits.new_tensor([self.pos_weight_val])
-        bce = F.binary_cross_entropy_with_logits(
-            logits,
-            targets,
-            pos_weight=pos_weight_tensor,
-        )
+        if valid_mask is not None:
+            bce_unreduced = F.binary_cross_entropy_with_logits(
+                logits,
+                targets,
+                pos_weight=pos_weight_tensor,
+                reduction="none",
+            )
+            bce = (bce_unreduced * valid_mask).sum() / valid_mask.sum().clamp(min=1.0)
+        else:
+            bce = F.binary_cross_entropy_with_logits(
+                logits,
+                targets,
+                pos_weight=pos_weight_tensor,
+            )
 
         dice = soft_dice_loss(logits, targets, smooth=self.smooth)
         total = self.bce_weight * bce + self.dice_weight * dice

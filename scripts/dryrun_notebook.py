@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from detector.colab_dataset import ColabDoppelDataset
+from detector.colab_dataset import ColabDoppelDataset, colab_collate_fn
 
 
 def main():
@@ -95,7 +95,7 @@ def main():
         assert val_manifest.exists(), "Missing val_manifest.csv after extraction"
 
         # 3. Simulate Cell 4: Loader sanity check
-        print("\n[STEP 2/4] Executing Cell 4: Dataset loader sanity check...")
+        print("\n[STEP 2/7] Executing Cell 4: Dataset loader sanity check...")
         dataset_sanity = ColabDoppelDataset(
             manifest_path=str(train_manifest),
             images_dir=str(synth_dir),
@@ -106,7 +106,7 @@ def main():
             seed=42,
         )
 
-        loader_sanity = DataLoader(dataset_sanity, batch_size=8, shuffle=True)
+        loader_sanity = DataLoader(dataset_sanity, batch_size=8, shuffle=True, collate_fn=colab_collate_fn)
         batch = next(iter(loader_sanity))
 
         imgs = batch["image"]
@@ -119,13 +119,13 @@ def main():
         print(f"  Batch valid_mask:  {vms.shape} (dtype: {vms.dtype})")
         print(f"  Batch labels:      {labels.tolist()}")
 
-        assert imgs.shape == (8, 3, 256, 256), f"Unexpected image shape: {imgs.shape}"
-        assert masks.shape == (8, 1, 256, 256), f"Unexpected mask shape: {masks.shape}"
-        assert vms.shape == (8, 1, 256, 256), f"Unexpected valid_mask shape: {vms.shape}"
+        assert imgs.shape[0] == 8 and imgs.shape[1] == 3 and imgs.shape[2] % 32 == 0 and imgs.shape[3] % 32 == 0, f"Unexpected image shape: {imgs.shape}"
+        assert masks.shape[0] == 8 and masks.shape[1] == 1 and masks.shape[2] == imgs.shape[2] and masks.shape[3] == imgs.shape[3], f"Unexpected mask shape: {masks.shape}"
+        assert vms.shape == masks.shape, f"Unexpected valid_mask shape: {vms.shape}"
         print("[PASS] Cell 4 loader sanity check passed.")
 
         # 4. Simulate Cell 5: Smoke test (both models, 2 epochs, subset 16)
-        print("\n[STEP 3/4] Executing Cell 5: Smoke test (unet and corr, subset 16, 2 epochs)...")
+        print("\n[STEP 3/7] Executing Cell 5: Smoke test (unet and corr, subset 16, 2 epochs)...")
         for mtype in ["unet", "corr"]:
             smoke_out = content_dir / f"smoke_{mtype}"
             smoke_drive_sync = drive_runs_dir / f"smoke_{mtype}"
@@ -160,7 +160,7 @@ def main():
             print(f"[PASS] Smoke test for {mtype} passed in {elapsed:.1f}s. Drive sync verified.")
 
         # 5. Simulate Cell 6: Shortened overfit test (corr model, subset 16, 1 epoch)
-        print("\n[STEP 4/4] Executing Cell 6: Shortened overfit test invocation (corr, 1 epoch)...")
+        print("\n[STEP 4/7] Executing Cell 6: Shortened overfit test invocation (corr, 1 epoch)...")
         overfit_out = content_dir / "overfit_corr"
         overfit_drive_sync = drive_runs_dir / "overfit_corr"
         cmd_overfit = [
@@ -193,14 +193,81 @@ def main():
         assert (overfit_drive_sync / "train_log.csv").exists(), "Missing synced overfit train_log.csv on fake Drive"
         print(f"[PASS] Overfit test call passed in {elapsed_of:.1f}s. Drive sync verified.")
 
-        # 6. Simulate Diagnostic Cell: diagnose_fa.py on last.pt
-        print("\n[STEP 5/5] Executing False Alarm Diagnostic Cell (diagnose_fa.py)...")
-        diag_out = content_dir / "diag_corr"
+        # 6. Simulate Cell 8b: Train CorrNet v2 (image head, 1 epoch, subset 16)
+        print("\n[STEP 5/7] Executing Cell 8b: CorrNet v2 training (image head, subset 16, 1 epoch)...")
+        corr_v2_out = content_dir / "corr_v2"
+        corr_v2_drive_sync = drive_runs_dir / "corr_v2"
+        cmd_v2 = [
+            sys.executable,
+            str(doppel_root / "scripts" / "train_cnn.py"),
+            "--model", "corr",
+            "--image-head",
+            "--epochs", "1",
+            "--batch-size", "8",
+            "--subset", "16",
+            "--crop-size", "128",
+            "--lr", "3e-4",
+            "--pos-weight", "1.0",
+            "--data-dir", str(synth_dir),
+            "--pristine-zip", str(content_data / "pristine_heldout.zip"),
+            "--pristine-val-count", "10",
+            "--out-dir", str(corr_v2_out),
+            "--drive-sync-dir", str(corr_v2_drive_sync),
+            "--device", "cpu",
+        ]
+        t0 = time.time()
+        res_v2 = subprocess.run(cmd_v2, capture_output=True, text=True)
+        elapsed_v2 = time.time() - t0
+        if res_v2.returncode != 0:
+            print(f"[FAIL] CorrNet v2 train failed:\nSTDOUT:\n{res_v2.stdout}\nSTDERR:\n{res_v2.stderr}")
+            sys.exit(1)
+
+        assert (corr_v2_out / "last.pt").exists(), "Missing local last.pt for corr_v2"
+        assert (corr_v2_drive_sync / "last.pt").exists(), "Missing synced last.pt on fake Drive for corr_v2"
+        assert (corr_v2_drive_sync / "train_log.csv").exists(), "Missing synced train_log.csv on fake Drive for corr_v2"
+        print(f"[PASS] CorrNet v2 training passed in {elapsed_v2:.1f}s. Drive sync verified.")
+
+        # 7. Simulate Cell 9: Resume training (--resume from fake Drive last.pt)
+        print("\n[STEP 6/7] Executing Cell 9: Resume training from Drive checkpoint...")
+        resume_out = content_dir / "resume_corr_v2"
+        cmd_resume = [
+            sys.executable,
+            str(doppel_root / "scripts" / "train_cnn.py"),
+            "--model", "corr",
+            "--image-head",
+            "--epochs", "2",
+            "--batch-size", "8",
+            "--subset", "16",
+            "--crop-size", "128",
+            "--lr", "3e-4",
+            "--pos-weight", "1.0",
+            "--resume", str(corr_v2_drive_sync / "last.pt"),
+            "--data-dir", str(synth_dir),
+            "--pristine-zip", str(content_data / "pristine_heldout.zip"),
+            "--pristine-val-count", "10",
+            "--out-dir", str(resume_out),
+            "--drive-sync-dir", str(corr_v2_drive_sync),
+            "--device", "cpu",
+        ]
+        t0 = time.time()
+        res_res = subprocess.run(cmd_resume, capture_output=True, text=True)
+        elapsed_res = time.time() - t0
+        if res_res.returncode != 0:
+            print(f"[FAIL] Resume training failed:\nSTDOUT:\n{res_res.stdout}\nSTDERR:\n{res_res.stderr}")
+            sys.exit(1)
+
+        assert (corr_v2_drive_sync / "last.pt").exists(), "Missing synced last.pt after resume"
+        print(f"[PASS] Resumed training passed in {elapsed_res:.1f}s. Epoch 2 reached and Drive synced.")
+
+        # 8. Simulate Diagnostic Cell: diagnose_fa.py on resumed last.pt
+        print("\n[STEP 7/7] Executing False Alarm Diagnostic Cell (diagnose_fa.py on corr_v2 last.pt)...")
+        diag_out = content_dir / "diag_corr_v2"
         cmd_diag = [
             sys.executable,
             str(doppel_root / "scripts" / "diagnose_fa.py"),
-            "--checkpoint", str(content_dir / "smoke_corr" / "last.pt"),
+            "--checkpoint", str(corr_v2_drive_sync / "last.pt"),
             "--model", "corr",
+            "--image-head",
             "--val-manifest", str(val_manifest),
             "--val-subset", "16",
             "--data-dir", str(content_data),

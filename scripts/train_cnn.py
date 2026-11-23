@@ -42,11 +42,12 @@ from detector.cnn import (
     ResNetCorrNet,
     ResNetUNet,
     is_better_checkpoint,
+    load_checkpoint,
     soft_dice_loss,
     sweep_thresholds,
 )
 from detector.cnn.infer import compute_top_k_mean, crop_to_original, filter_min_area
-from detector.colab_dataset import ColabDoppelDataset
+from detector.colab_dataset import ColabDoppelDataset, colab_collate_fn
 
 
 def get_git_commit() -> str:
@@ -180,7 +181,14 @@ def evaluate(
             valid_mask = batch["valid_mask"].to(device)
             is_forged = bool(batch["label"].item() > 0.5)
 
-            logits = model(image, valid_mask=valid_mask)
+            out = model(image, valid_mask=valid_mask)
+            if isinstance(out, tuple):
+                logits, img_logit = out
+                img_prob = float(torch.sigmoid(img_logit)[0].item())
+            else:
+                logits = out
+                img_prob = None
+
             probs = torch.sigmoid(logits)
 
             vm_bool = (valid_mask > 0.5)[0, 0].cpu().numpy()
@@ -205,7 +213,11 @@ def evaluate(
             all_scores.append(top100_mean)
             all_labels.append(1 if is_forged else 0)
 
-            rec: Dict[str, Any] = {"max_prob": max_prob, "top100_mean": top100_mean}
+            rec: Dict[str, Any] = {
+                "max_prob": max_prob,
+                "top100_mean": top100_mean,
+                "image_prob": img_prob,
+            }
 
             # Evaluate grid over tau and min_area
             for tau in thresholds:
@@ -299,7 +311,14 @@ def evaluate(
                 ).unsqueeze(0).to(device)
                 t_vm = torch.from_numpy(vm.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device)
 
-                logits = model(t_img, valid_mask=t_vm)
+                out_p = model(t_img, valid_mask=t_vm)
+                if isinstance(out_p, tuple):
+                    logits, img_logit = out_p
+                    p_img_prob = float(torch.sigmoid(img_logit)[0].item())
+                else:
+                    logits = out_p
+                    p_img_prob = None
+
                 probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
                 # Strict crop back to unpadded pristine resolution
@@ -307,7 +326,11 @@ def evaluate(
                 max_prob = float(probs_cropped.max()) if probs_cropped.size > 0 else 0.0
                 top100_mean = compute_top_k_mean(probs_cropped, k=100)
 
-                p_rec: Dict[str, Any] = {"max_prob": max_prob, "top100_mean": top100_mean}
+                p_rec: Dict[str, Any] = {
+                    "max_prob": max_prob,
+                    "top100_mean": top100_mean,
+                    "image_prob": p_img_prob,
+                }
                 for tau in thresholds:
                     pred_bin = (probs_cropped >= tau).astype(np.uint8)
                     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
@@ -340,6 +363,7 @@ def evaluate(
         "val_recall_budget": sweep_res["best_recall"],
         "val_thresh_budget": sweep_res["best_threshold"],
         "val_area_budget": sweep_res["best_min_area"],
+        "val_image_thresh_budget": sweep_res.get("best_image_threshold", 0.0),
         "val_meets_budget": 1 if sweep_res["meets_budget"] else 0,
         "val_synth_clean_far": sweep_res["best_synth_far"],
         "val_pristine_far": sweep_res["best_pristine_far"],
@@ -356,7 +380,8 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--batch-size", type=int, default=16, help="Training batch size.")
     parser.add_argument("--lr", type=float, default=3e-4, help="Peak learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay.")
-    parser.add_argument("--pos-weight", type=float, default=2.0, help="Positive class weight in BCE.")
+    parser.add_argument("--pos-weight", type=float, default=1.0, help="Positive class weight in BCE (default 1.0).")
+    parser.add_argument("--image-head", action="store_true", help="Enable image-level logit head for ResNetCorrNet.")
     parser.add_argument("--subset", type=int, default=None, help="Train/val on a small subset of samples.")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training.")
     parser.add_argument("--out-dir", type=str, default="checkpoints/run1", help="Output directory for checkpoints and logs.")
@@ -453,6 +478,7 @@ def main():
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
+        collate_fn=colab_collate_fn,
         num_workers=0,
         pin_memory=(device.type == "cuda"),
     )
@@ -468,7 +494,7 @@ def main():
     if args.model == "unet":
         model = ResNetUNet(pretrained=True)
     elif args.model == "corr":
-        model = ResNetCorrNet(pretrained=True)
+        model = ResNetCorrNet(pretrained=True, image_head=args.image_head)
     else:
         raise ValueError(f"Unknown model: {args.model}")
 
@@ -500,7 +526,7 @@ def main():
     # Resume support
     if args.resume and os.path.isfile(args.resume):
         print(f"[INFO] Resuming checkpoint from: {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = load_checkpoint(args.resume, map_location=device)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         if "scaler_state_dict" in ckpt and use_amp and ckpt["scaler_state_dict"] is not None:
@@ -560,12 +586,20 @@ def main():
             image = batch["image"].to(device)
             mask = batch["mask"].to(device)
             valid_mask = batch["valid_mask"].to(device)
+            labels = batch["label"].to(device)
 
             optimizer.zero_grad()
 
             with torch.autocast(device_type=device.type, enabled=use_amp):
-                logits = model(image, valid_mask=valid_mask)
-                loss, bce, dice = criterion(logits, mask)
+                out = model(image, valid_mask=valid_mask)
+                if isinstance(out, tuple):
+                    logits, img_logits = out
+                    loss_pix, bce, dice = criterion(logits, mask, valid_mask=valid_mask)
+                    loss_img = F.binary_cross_entropy_with_logits(img_logits, labels)
+                    loss = loss_pix + 1.0 * loss_img
+                else:
+                    logits = out
+                    loss, bce, dice = criterion(logits, mask, valid_mask=valid_mask)
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -676,13 +710,17 @@ def main():
                     print(f"  [WARNING] Failed to sync periodic checkpoint to Drive: {e}")
             print(f"  --> Saved periodic checkpoint to {periodic_path.name}")
 
-        # Select best checkpoint: recall at FAR <= 1% on pristine + synthetic clean, with ROC AUC as fallback
+        # Select best checkpoint: recall at FAR <= 1% on pristine + synthetic clean, with lowest max-FAR fallback
         current_checkpoint_eval = {
             "meets_budget": val_meets_budget,
             "recall": val_rec_budget,
             "roc_auc": val_auc,
             "fallback_score": val_auc,
+            "best_threshold": val_thresh_budget,
             "best_min_area": val_area_budget,
+            "best_image_threshold": val_metrics.get("val_image_thresh_budget", 0.0),
+            "best_synth_far": synth_far,
+            "best_pristine_far": pristine_far,
             "epoch": epoch,
         }
 
@@ -692,7 +730,7 @@ def main():
             ckpt_state["best_checkpoint_eval"] = best_checkpoint_eval
             torch.save(ckpt_state, out_dir / "best.pt")
             saved_new_best = True
-            crit_str = "recall@1%FAR" if val_meets_budget else "ROC_AUC_fallback"
+            crit_str = "recall@1%FAR" if val_meets_budget else f"lowest_max_FAR_fallback(max_FAR={max(synth_far, pristine_far)*100:.2f}%)"
             val_score = val_rec_budget if val_meets_budget else val_auc
             print(f"  --> Saved new best checkpoint to {out_dir / 'best.pt'} ({crit_str}: {val_score:.4f})")
 

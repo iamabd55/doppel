@@ -299,3 +299,28 @@ All notable changes to the Doppel repository are documented here.
 - Added diagnostic cell to `notebooks/phase4_train.ipynb` running `diagnose_fa.py` on `last.pt` and `best.pt`.
 - Extended `scripts/dryrun_notebook.py` to execute `diagnose_fa.py` on CPU. All 5 dry-run steps passed end-to-end.
 - Rebuilt `data/doppel_code.zip` (72 KB). All 44 unit tests passing.
+
+### Added and Fixed (Phase 4, CorrNet v2 with Image Head, Partner-Guaranteed Cropping, and Diagnostics Suite)
+- Partner-Guaranteed Cropping in `detector/colab_dataset.py`:
+  - Audited positive crop completeness over 2,000 training samples. Before fix: 483 (94.71%) both source and target present, 27 (5.29%) single-patch orphaned crops. After fix: 514 (100.00%) both present, 0 (0.00%) orphaned.
+  - Implemented partner-guaranteed cropping in `_crop_pair`: expands crop bounding box up to 512 px with margin. If pair exceeds 512 px, zeroes out masks for components whose partner is excluded, and marks the crop clean if no complete pair exists.
+  - Implemented `colab_collate_fn` to support dynamic batch padding for variable crop sizes.
+- ResNetCorrNet v2 with Image Head in `detector/cnn/corr_net.py`:
+  - Added `--image-head` architecture: global average pooling on layer4 (512-d) concatenated with top-4 correlation summary statistics (max and mean across valid coordinates = 8-d), mapped through linear classification layer.
+  - Updated `train_cnn.py` to optimize image-level BCE loss (weight 1.0) alongside pixel BCE (`pos_weight=1.0`) and soft Dice loss on forged samples only.
+  - Updated `infer.py` to evaluate compound decision rule: `(image_prob >= s) and (pred_mask_area >= a)`.
+- Validation Selection and Checkpoint Handling in `detector/cnn/selection.py`:
+  - Upgraded threshold optimization to 3D grid sweep over (image_threshold s, pixel_threshold tau, min_area a).
+  - Implemented lowest max-FAR fallback: when no checkpoint reaches FAR <= 1.0% on both validation sets, selects the checkpoint minimizing `max(synth_clean_far, pristine_far)`.
+  - Added robust `load_checkpoint` helper handling PyTorch 2.6+ `weights_only=False` across all CNN scripts.
+- Diagnostic Suite in `scripts/diagnose_fa.py`:
+  - Extended grid to tau in {0.3, 0.5, 0.7, 0.9, 0.95, 0.98} x min_area in {0, 50, 100, 200, 400, 800, 1600}.
+  - Added training config and loss settings display from `config.json` and checkpoint dictionary.
+  - Added false alarm breakdowns by class and degradation tier for synthetic clean twins and pristine panels.
+  - Added recall breakdowns by class, tier, transform type, and single vs multi-copy at tau in {0.5, 0.9} with Wilson 95% CIs.
+  - Added `--image-head` support and displays image probability `img_p` in worst-clean overlay figure.
+- Notebook and Colab Assets:
+  - Added Cell 8b in `notebooks/phase4_train.ipynb` for CorrNet v2 full training (25 epochs, 120 min budget) and immediate diagnostics on `last.pt`.
+  - Extended `scripts/dryrun_notebook.py` to 7 steps (loader check, smoke test, overfit test, CorrNet v2 train, resume from Drive, and diagnose_fa on CPU).
+  - Rebuilt `data/doppel_code.zip` (80 KB).
+  - All 47 unit tests passing. Zero em dashes across repository.
