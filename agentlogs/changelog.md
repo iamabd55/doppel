@@ -441,5 +441,26 @@ All notable changes to the Doppel repository are documented here.
 - Created `tests/test_fusion.py` validating all tiers, unpacking, edge cases, and complex outputs (8 tests). All 67 repository tests pass.
 - Verified synthetic test results remain strictly identical before and after.
 
+### Added and Verified (Part B: Model Checkpoint, Thresholds, and Rules Freeze)
+- Tagged release `phase4-frozen` via git.
+- Logged checkpoint provenance in `docs/phase4_log.md`:
+  - Checkpoint: `checkpoints/corr_v2/last.pt` (ResNetCorrNet v2 with image head, 25 epochs).
+  - Checkpoint SHA256: `0f463d51823f8394f93a2f5a5e84e4afeb7554f2e078da9db7a398e310527b60`.
+  - Full operating threshold specification from `configs/cnn_threshold.yaml` across 1.0%, 1.5%, 2.0%, and 3.0% budgets.
+  - Multi-detector fusion decision rules logged verbatim.
+
+### Added and Verified (Part C: Dry Run on 50 Pristine Held-Out Train Panels)
+- Enhanced `run_pristine_train_audit` in `scripts/benchmark.py`:
+  - Added support for loading CNN model and evaluating CNN predictions on pristine panels alongside DCT and SIFT.
+  - Integrated `detector/fusion.py` to record `fusion_tier` and `fusion_detectors` per panel.
+  - Added fallback image loading from `data/pristine_heldout.zip` within the workspace.
+- Executed dry run on 50 held-out pristine train panels (25 Blot/Gel, 25 Microscopy) on CPU:
+  - 48 / 50 panels triggered tier `none` (zero detectors fired).
+  - 1 / 50 panels triggered tier `medium` (CNN fired, classical silent).
+  - 1 / 50 panels triggered tier `low` (SIFT fired, DCT and CNN silent).
+  - 0 / 50 panels triggered tier `high` (zero false alarms at high confidence).
+  - Saved outputs to `results/phase4_cnn/pristine_train_audit.csv`.
+- Confirmed full pipeline functionality on real scientific images before touching test data. All 67 unit tests pass.
+
 
 

@@ -23,7 +23,7 @@
 | Step 3 (Wrap-up) | Synthetic test benchmark | COMPLETED | 2026-11-23 | Evaluated 600 synthetic test pairs (300 forged, 300 clean twins). Clean FAR 0.00% [0.00%, 1.26%], Blot/Gel recall 73.0% [65.5%, 79.5%], Microscopy recall 25.0% [18.7%, 32.6%]. Zero calibration drift, zero overfitting. |
 | Part A | Standardized fusion module | COMPLETED | 2026-11-23 | `detector/fusion.py` implementing exact tier rules (high, medium, low, none) with unit tests (8 tests). |
 | Part B | Phase 4 Model and Threshold Freeze | COMPLETED | 2026-11-23 | Tagged `phase4-frozen`. Logged checkpoint SHA256, threshold yaml, and fusion rules. |
-| Part C | Dry run on 50 pristine train panels | PENDING | - | Sanity check on CPU before real evaluation. |
+| Part C | Dry run on 50 pristine train panels | COMPLETED | 2026-11-23 | Evaluated 50 held-out pristine train panels on CPU (25 Blot/Gel, 25 Microscopy) across DCT, SIFT, CNN, and fusion. 48/50 none, 1/50 medium, 1/50 low, 0/50 high. All detectors and fusion verified functional. |
 | Part D | One-shot real BioFors IDD test evaluation | PENDING | - | Final touch on real test split (91 manipulated, 2,195 clean). |
 
 ## Phase 4 Freeze Specifications (Tag: phase4-frozen)

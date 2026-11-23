@@ -25,6 +25,7 @@ import math
 import os
 import sys
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -604,7 +605,12 @@ def run_pristine_train_audit(
     sift_params: Dict[str, Any],
     eval_dct: bool,
     eval_sift: bool,
+    eval_cnn: bool,
     adapted_dct_params: Dict[str, Any],
+    cnn_checkpoint: str = "checkpoints/corr_v2/last.pt",
+    cnn_config: str = "configs/cnn_threshold.yaml",
+    cnn_budget: float = 0.01,
+    cnn_device: str = "cpu",
     sample_size: int = 1000,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     print("\n" + "=" * 70)
@@ -626,7 +632,7 @@ def run_pristine_train_audit(
 
     print(f"Total train panels in unused documents : {len(unused_train_df)} across {unused_train_df['doc_id'].nunique()} docs")
 
-    # Sample up to 1000 panels balanced across Blot/Gel and Microscopy
+    # Sample up to sample_size panels balanced across Blot/Gel and Microscopy
     blots = unused_train_df[unused_train_df["class"] == "Blot/Gel"]
     micros = unused_train_df[unused_train_df["class"] == "Microscopy"]
 
@@ -640,12 +646,29 @@ def run_pristine_train_audit(
     ad_votes = adapted_dct_params.get("min_votes", 75)
     ad_size = adapted_dct_params.get("min_size", 64)
 
+    cnn_model = None
+    if eval_cnn:
+        print(f"[INFO] Loading CNN model from {cnn_checkpoint} on {cnn_device}...")
+        cnn_model = load_cnn_model(checkpoint_path=cnn_checkpoint, device=cnn_device)
+
+    pristine_zip_path = REPO_ROOT / "data" / "pristine_heldout.zip"
+    zip_ref = zipfile.ZipFile(pristine_zip_path, "r") if pristine_zip_path.exists() else None
+
     records = []
     start_time = time.time()
 
     for idx, row in sample_df.iterrows():
+        img_bgr = None
         img_path = images_dir / row["rel_path"]
-        img_bgr = cv2.imread(str(img_path))
+        if img_path.exists():
+            img_bgr = cv2.imread(str(img_path))
+        if img_bgr is None and zip_ref is not None:
+            zip_member = f"pristine_heldout/images/{row['rel_path']}"
+            try:
+                buf = zip_ref.read(zip_member)
+                img_bgr = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+            except Exception:
+                img_bgr = None
         if img_bgr is None:
             continue
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -678,27 +701,48 @@ def run_pristine_train_audit(
             )
             record["sift_flagged"] = bool((sift_mask > 0).any())
 
-        # Multi-detector fusion (call detector/fusion.py)
-        if "cnn_flagged" in record:
-            fusion_res = fuse(
-                dct_out={"flagged": record.get("ad_dct_flagged", False), "regions": []},
-                sift_out={"flagged": record.get("sift_flagged", False), "regions": []},
-                cnn_out={"flagged": record.get("cnn_flagged", False), "regions": []},
+        cnn_regions = []
+        if eval_cnn:
+            cnn_mask, cnn_score, cnn_regions = predict_cnn(
+                img_bgr,
+                image_class=row["class"],
+                config_path=cnn_config,
+                budget=cnn_budget,
+                device=cnn_device,
+                model=cnn_model,
             )
-            record["fusion_tier"] = fusion_res.tier
-            record["fusion_detectors"] = "+".join(fusion_res.detectors_fired)
+            record["cnn_flagged"] = bool((cnn_mask > 0).any())
+            record["cnn_score"] = round(float(cnn_score), 4)
+            record["cnn_regions_count"] = len(cnn_regions)
+
+        # Multi-detector fusion (call detector/fusion.py)
+        fusion_res = fuse(
+            dct_out={"flagged": record.get("ad_dct_flagged", False), "regions": []},
+            sift_out={"flagged": record.get("sift_flagged", False), "regions": []},
+            cnn_out={"flagged": record.get("cnn_flagged", False), "regions": cnn_regions},
+        )
+        record["fusion_tier"] = fusion_res.tier
+        record["fusion_detectors"] = "+".join(fusion_res.detectors_fired)
 
         records.append(record)
 
-        if (idx + 1) % 250 == 0 or (idx + 1) == len(sample_df):
+        if (idx + 1) % 50 == 0 or (idx + 1) == len(sample_df):
             elapsed = time.time() - start_time
             rate = (idx + 1) / max(0.01, elapsed)
             print(f"  Processed [{idx + 1}/{len(sample_df)}] pristine train panels ({rate:.1f} panels/s)")
 
+    if zip_ref is not None:
+        zip_ref.close()
+
     results_df = pd.DataFrame(records)
 
     pristine_stats = {}
-    for prefix, name in [("dct", "Frozen DCT"), ("ad_dct", "Adapted DCT"), ("sift", "Frozen SIFT")]:
+    for prefix, name in [
+        ("dct", "Frozen DCT"),
+        ("ad_dct", "Adapted DCT"),
+        ("sift", "Frozen SIFT"),
+        ("cnn", "CorrNet v2 (CNN)"),
+    ]:
         if f"{prefix}_flagged" in results_df:
             fp = results_df[f"{prefix}_flagged"].sum()
             n_tot = len(results_df)
@@ -1201,8 +1245,19 @@ def main():
 
     # 3. Real Pristine Train Audit Check
     if args.dataset in ["pristine_train", "both"]:
+        pristine_size = args.limit if args.limit is not None else 1000
         pristine_df, pristine_stats = run_pristine_train_audit(
-            images_dir, sift_params, eval_dct, eval_sift, adapted_cfg, sample_size=1000
+            images_dir,
+            sift_params,
+            eval_dct=eval_dct,
+            eval_sift=eval_sift,
+            eval_cnn=eval_cnn,
+            adapted_dct_params=adapted_cfg,
+            cnn_checkpoint=args.cnn_checkpoint,
+            cnn_config=args.cnn_config,
+            cnn_budget=args.cnn_budget,
+            cnn_device=args.cnn_device,
+            sample_size=pristine_size,
         )
         if not pristine_df.empty:
             pristine_df.to_csv(out_dir / "pristine_train_audit.csv", index=False)
