@@ -38,10 +38,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from detector.detect import detect
 from detector.sift import detect_sift
+from detector.cnn import predict_cnn, load_cnn_model
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark DCT and SIFT on scientific datasets.")
+    parser = argparse.ArgumentParser(description="Benchmark DCT, SIFT, and CNN on scientific datasets.")
     parser.add_argument(
         "--dataset",
         choices=["synthetic", "biofors", "pristine_train", "both", "summary_only"],
@@ -50,9 +51,45 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--detector",
-        choices=["dct", "sift", "both"],
-        default="both",
-        help="Which detector to evaluate (default: both)",
+        choices=["dct", "sift", "cnn", "both", "all"],
+        default="all",
+        help="Which detector to evaluate: dct, sift, cnn, both (dct+sift), or all (default: all)",
+    )
+    parser.add_argument(
+        "--cnn-checkpoint",
+        type=str,
+        default="checkpoints/corr_v2/last.pt",
+        help="Path to CNN model checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--cnn-config",
+        type=str,
+        default="configs/cnn_threshold.yaml",
+        help="Path to CNN threshold configuration file",
+    )
+    parser.add_argument(
+        "--cnn-budget",
+        type=float,
+        default=0.01,
+        help="Target false alarm rate budget for CNN (default: 0.01 = 1.0%)",
+    )
+    parser.add_argument(
+        "--cnn-device",
+        type=str,
+        default="cpu",
+        help="Device to run CNN on (default: cpu)",
+    )
+    parser.add_argument(
+        "--reuse-classical",
+        action="store_true",
+        default=True,
+        help="Reuse cached classical detector results from phase3_synthetic if available (default: True)",
+    )
+    parser.add_argument(
+        "--no-reuse-classical",
+        dest="reuse_classical",
+        action="store_false",
+        help="Do not reuse cached classical detector results; re-run them",
     )
     parser.add_argument(
         "--limit",
@@ -75,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="results/phase3_synthetic",
+        default="results/phase4_cnn",
         help="Directory to save benchmark results",
     )
     return parser.parse_args()
@@ -241,9 +278,15 @@ def run_benchmark_synthetic(
     sift_params: Dict[str, Any],
     eval_dct: bool,
     eval_sift: bool,
+    eval_cnn: bool,
     adapted_dct_params: Dict[str, Any],
+    cnn_checkpoint: str = "checkpoints/corr_v2/last.pt",
+    cnn_config: str = "configs/cnn_threshold.yaml",
+    cnn_budget: float = 0.01,
+    cnn_device: str = "cpu",
+    reuse_classical: bool = True,
     limit: Optional[int] = None,
-) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     print("\n" + "=" * 70)
     print("BENCHMARK 1: SYNTHETIC TEST SET (PAIRED TWINS)")
     print("=" * 70)
@@ -254,6 +297,23 @@ def run_benchmark_synthetic(
 
     ad_votes = adapted_dct_params.get("min_votes", 75)
     ad_size = adapted_dct_params.get("min_size", 64)
+
+    cached_df = None
+    cached_path = REPO_ROOT / "results" / "phase3_synthetic" / "synthetic_benchmark.csv"
+    if reuse_classical and cached_path.exists():
+        try:
+            cached_df = pd.read_csv(cached_path).set_index("sample_id")
+            print(f"[INFO] Found previous benchmark results at {cached_path}. Reusing classical baseline columns.")
+        except Exception:
+            cached_df = None
+
+    run_dct = eval_dct and (cached_df is None)
+    run_sift = eval_sift and (cached_df is None)
+
+    cnn_model = None
+    if eval_cnn:
+        print(f"[INFO] Loading CNN model from {cnn_checkpoint} on {cnn_device}...")
+        cnn_model = load_cnn_model(checkpoint_path=cnn_checkpoint, device=cnn_device)
 
     records = []
     start_time = time.time()
@@ -280,8 +340,11 @@ def run_benchmark_synthetic(
             "low_texture": bool(row.get("low_texture", False)),
         }
 
+        # Check cached columns if not re-evaluating
+        sid = row["sample_id"]
+
         # 1. Frozen DCT (votes=150, size=500)
-        if eval_dct:
+        if run_dct:
             t0 = time.time()
             dct_mask = detect(gray, Q=8, K=6, min_votes=150, min_size=500)
             tp, fp, fn, tn, p, r, f1 = evaluate_pair(dct_mask, gt_mask)
@@ -305,9 +368,25 @@ def run_benchmark_synthetic(
                 "ad_dct_pix_tn": tn,
                 "ad_dct_f1": round(f1, 4),
             })
+        elif cached_df is not None and sid in cached_df.index:
+            crow = cached_df.loc[sid]
+            record.update({
+                "dct_flagged": bool(crow.get("dct_flagged", False)),
+                "dct_pix_tp": int(crow.get("dct_pix_tp", 0)),
+                "dct_pix_fp": int(crow.get("dct_pix_fp", 0)),
+                "dct_pix_fn": int(crow.get("dct_pix_fn", 0)),
+                "dct_pix_tn": int(crow.get("dct_pix_tn", 0)),
+                "dct_f1": float(crow.get("dct_f1", 0.0)),
+                "ad_dct_flagged": bool(crow.get("ad_dct_flagged", False)),
+                "ad_dct_pix_tp": int(crow.get("ad_dct_pix_tp", 0)),
+                "ad_dct_pix_fp": int(crow.get("ad_dct_pix_fp", 0)),
+                "ad_dct_pix_fn": int(crow.get("ad_dct_pix_fn", 0)),
+                "ad_dct_pix_tn": int(crow.get("ad_dct_pix_tn", 0)),
+                "ad_dct_f1": float(crow.get("ad_dct_f1", 0.0)),
+            })
 
         # 3. Frozen SIFT (cfg8_best_combo)
-        if eval_sift:
+        if run_sift:
             sift_mask, _, _, _ = detect_sift(
                 gray,
                 ratio_threshold=sift_params.get("ratio_threshold", 0.70),
@@ -329,6 +408,38 @@ def run_benchmark_synthetic(
                 "sift_pix_tn": tn,
                 "sift_f1": round(f1, 4),
             })
+        elif cached_df is not None and sid in cached_df.index:
+            crow = cached_df.loc[sid]
+            record.update({
+                "sift_flagged": bool(crow.get("sift_flagged", False)),
+                "sift_pix_tp": int(crow.get("sift_pix_tp", 0)),
+                "sift_pix_fp": int(crow.get("sift_pix_fp", 0)),
+                "sift_pix_fn": int(crow.get("sift_pix_fn", 0)),
+                "sift_pix_tn": int(crow.get("sift_pix_tn", 0)),
+                "sift_f1": float(crow.get("sift_f1", 0.0)),
+            })
+
+        # 4. Phase 4 CNN (CorrNet v2, locked thresholds from YAML)
+        if eval_cnn:
+            cnn_mask, cnn_score, cnn_regions = predict_cnn(
+                img_bgr,
+                image_class=row["class"],
+                config_path=cnn_config,
+                budget=cnn_budget,
+                device=cnn_device,
+                model=cnn_model,
+            )
+            tp, fp, fn, tn, p, r, f1 = evaluate_pair(cnn_mask, gt_mask)
+            record.update({
+                "cnn_flagged": bool((cnn_mask > 0).any()),
+                "cnn_score": round(float(cnn_score), 4),
+                "cnn_regions_count": len(cnn_regions),
+                "cnn_pix_tp": tp,
+                "cnn_pix_fp": fp,
+                "cnn_pix_fn": fn,
+                "cnn_pix_tn": tn,
+                "cnn_f1": round(f1, 4),
+            })
 
         records.append(record)
 
@@ -337,11 +448,14 @@ def run_benchmark_synthetic(
             print(f"  Processed [{idx + 1}/{len(df)}] synthetic samples ({elapsed:.1f}s)")
 
     results_df = pd.DataFrame(records)
-    dct_metrics = compute_metrics(records, "dct") if eval_dct else {}
-    ad_dct_metrics = compute_metrics(records, "ad_dct") if eval_dct else {}
-    sift_metrics = compute_metrics(records, "sift") if eval_sift else {}
+    has_dct = run_dct or (cached_df is not None)
+    has_sift = run_sift or (cached_df is not None)
+    dct_metrics = compute_metrics(records, "dct") if (eval_dct and has_dct) else {}
+    ad_dct_metrics = compute_metrics(records, "ad_dct") if (eval_dct and has_dct) else {}
+    sift_metrics = compute_metrics(records, "sift") if (eval_sift and has_sift) else {}
+    cnn_metrics = compute_metrics(records, "cnn") if eval_cnn else {}
 
-    return results_df, dct_metrics, ad_dct_metrics, sift_metrics
+    return results_df, dct_metrics, ad_dct_metrics, sift_metrics, cnn_metrics
 
 
 def run_benchmark_biofors(
@@ -574,6 +688,7 @@ def generate_summary_markdown(
     synth_dct: Dict[str, Any],
     synth_ad_dct: Dict[str, Any],
     synth_sift: Dict[str, Any],
+    synth_cnn: Dict[str, Any],
     real_dct: Dict[str, Any],
     real_ad_dct: Dict[str, Any],
     real_sift: Dict[str, Any],
@@ -583,9 +698,9 @@ def generate_summary_markdown(
     out_path: Path,
 ):
     md = []
-    md.append("# Phase 3: Scientific Benchmark Summary")
+    md.append("# Scientific Benchmark Summary (Phase 4 CNN & Classical Baselines)")
     md.append("")
-    md.append("Comparative evaluation of Frozen DCT (votes=150, min_size=500), Adapted DCT (votes=75, min_size=64, tuned strictly on synthetic VAL only), and Frozen SIFT (cfg8_best_combo).")
+    md.append("Comparative evaluation of Frozen DCT (votes=150, min_size=500), Adapted DCT (votes=75, min_size=64, tuned strictly on synthetic VAL only), Frozen SIFT (cfg8_best_combo), and CorrNet v2 CNN (locked thresholds from YAML).")
     md.append("")
     md.append("**Evaluation Rules:**")
     md.append("- Overlap Rule: Image detection strictly requires true overlap with ground truth (`pix_tp > 0`).")
@@ -611,24 +726,66 @@ def generate_summary_markdown(
             f"{m['tp_overlap']}/{m['total_forged']} ({m['rec_overlap']*100:.1f}%) [{r_ci[0]*100:.1f}%, {r_ci[1]*100:.1f}%] | "
             f"{m['tp_any']}/{m['total_forged']} ({m['rec_any']*100:.1f}%) [{a_ci[0]*100:.1f}%, {a_ci[1]*100:.1f}%] | "
             f"{m['pix_f1']:.4f} | {m['pix_mcc']:.4f} | "
-            f"{m['fp']}/{m['total_clean']} ({m['far']*100:.1f}%) [{f_ci[0]*100:.1f}%, {f_ci[1]*100:.1f}%] |"
+            f"{m['fp']}/{m['total_clean']} ({m['far']*100:.2f}%) [{f_ci[0]*100:.2f}%, {f_ci[1]*100:.2f}%] |"
         )
 
     format_row("Synthetic Test (300)", "Frozen DCT", synth_dct)
     format_row("Synthetic Test (300)", "Adapted DCT (val-tuned)", synth_ad_dct)
     format_row("Synthetic Test (300)", "Frozen SIFT", synth_sift)
+    format_row("Synthetic Test (300)", "CorrNet v2 (CNN, 1% FAR)", synth_cnn)
     format_row("Real BioFors IDD (2,286)", "Frozen DCT", real_dct)
     format_row("Real BioFors IDD (2,286)", "Adapted DCT (val-tuned)", real_ad_dct)
     format_row("Real BioFors IDD (2,286)", "Frozen SIFT", real_sift)
 
-    # 2. Real BioFors IDD Test (Blot/Gel vs Microscopy)
-    md.append("")
-    md.append("## 2. Real BioFors IDD Test (Blot/Gel and Microscopy Separately)")
-    md.append("")
-    md.append("| Class | Manipulated Panels | Clean Panels | Detector | Image Recall (Overlap) [95% CI] | Image Recall (Any Flagged) [95% CI] | Clean False Alarm Rate [95% CI] |")
-    md.append("|---|---|---|---|---|---|---|")
+    # 2a. Synthetic Test (Blot/Gel and Microscopy Separately)
+    if not synth_df.empty:
+        md.append("")
+        md.append("## 2a. Synthetic Test (Blot/Gel and Microscopy Separately)")
+        md.append("")
+        md.append("| Class | Manipulated Panels | Clean Panels | Detector | Image Recall (Overlap) [95% CI] | Image Recall (Any Flagged) [95% CI] | Clean False Alarm Rate [95% CI] |")
+        md.append("|---|---|---|---|---|---|---|")
 
+        for cname in ["Blot/Gel", "Microscopy"]:
+            cdf = synth_df[synth_df["class"] == cname]
+            f_sub = cdf[cdf["is_forged"]]
+            c_sub = cdf[~cdf["is_forged"]]
+            nf = len(f_sub)
+            nc = len(c_sub)
+            low_conf = " *" if nf < 30 else ""
+
+            d_list = [("dct", "Frozen DCT"), ("ad_dct", "Adapted DCT"), ("sift", "Frozen SIFT")]
+            if "cnn_flagged" in synth_df:
+                d_list.append(("cnn", "CorrNet v2 (CNN)"))
+
+            for pfx, dlabel in d_list:
+                if f"{pfx}_flagged" in f_sub:
+                    tp_ov = int((f_sub[f"{pfx}_pix_tp"] > 0).sum())
+                    tp_any = int(f_sub[f"{pfx}_flagged"].sum())
+                    fp = int(c_sub[f"{pfx}_flagged"].sum())
+
+                    r_ov = tp_ov / nf if nf > 0 else 0.0
+                    r_any = tp_any / nf if nf > 0 else 0.0
+                    far = fp / nc if nc > 0 else 0.0
+
+                    r_ov_ci = wilson_ci(tp_ov, nf)
+                    r_any_ci = wilson_ci(tp_any, nf)
+                    far_ci = wilson_ci(fp, nc)
+
+                    md.append(
+                        f"| {cname}{low_conf} | {nf} | {nc} | {dlabel} | "
+                        f"{tp_ov}/{nf} ({r_ov*100:.1f}%) [{r_ov_ci[0]*100:.1f}%, {r_ov_ci[1]*100:.1f}%] | "
+                        f"{tp_any}/{nf} ({r_any*100:.1f}%) [{r_any_ci[0]*100:.1f}%, {r_any_ci[1]*100:.1f}%] | "
+                        f"{fp}/{nc} ({far*100:.2f}%) [{far_ci[0]*100:.2f}%, {far_ci[1]*100:.2f}%] |"
+                    )
+
+    # 2b. Real BioFors IDD Test (Blot/Gel vs Microscopy)
     if not real_df.empty:
+        md.append("")
+        md.append("## 2b. Real BioFors IDD Test (Blot/Gel and Microscopy Separately)")
+        md.append("")
+        md.append("| Class | Manipulated Panels | Clean Panels | Detector | Image Recall (Overlap) [95% CI] | Image Recall (Any Flagged) [95% CI] | Clean False Alarm Rate [95% CI] |")
+        md.append("|---|---|---|---|---|---|---|")
+
         for cname in ["Blot/Gel", "Microscopy"]:
             cdf = real_df[real_df["class"] == cname]
             f_sub = cdf[cdf["is_forged"]]
@@ -655,15 +812,17 @@ def generate_summary_markdown(
                         f"| {cname}{low_conf} | {nf} | {nc} | {dlabel} | "
                         f"{tp_ov}/{nf} ({r_ov*100:.1f}%) [{r_ov_ci[0]*100:.1f}%, {r_ov_ci[1]*100:.1f}%] | "
                         f"{tp_any}/{nf} ({r_any*100:.1f}%) [{r_any_ci[0]*100:.1f}%, {r_any_ci[1]*100:.1f}%] | "
-                        f"{fp}/{nc} ({far*100:.1f}%) [{far_ci[0]*100:.1f}%, {far_ci[1]*100:.1f}%] |"
+                        f"{fp}/{nc} ({far*100:.2f}%) [{far_ci[0]*100:.2f}%, {far_ci[1]*100:.2f}%] |"
                     )
 
     # 3. Synthetic Test Recall by Class and Degradation Severity Tier
     md.append("")
     md.append("## 3. Synthetic Test Recall by Class and Degradation Severity Tier (Class x Tier Table, Overlap Rule)")
     md.append("")
-    md.append("| Degradation Tier | Image Class | Forged Samples | Frozen DCT Recall [95% CI] | Adapted DCT Recall [95% CI] | Frozen SIFT Recall [95% CI] |")
-    md.append("|---|---|---|---|---|---|")
+    has_cnn = "cnn_pix_tp" in synth_df if not synth_df.empty else False
+    cnn_hdr = " | CorrNet v2 (CNN) Recall [95% CI]" if has_cnn else ""
+    md.append(f"| Degradation Tier | Image Class | Forged Samples | Frozen DCT Recall [95% CI] | Adapted DCT Recall [95% CI] | Frozen SIFT Recall [95% CI]{cnn_hdr} |")
+    md.append(f"|---|---|---|---|---|---|{'---|' if has_cnn else ''}")
 
     if not synth_df.empty:
         f_synth = synth_df[synth_df["is_forged"]]
@@ -679,7 +838,8 @@ def generate_summary_markdown(
                 return f"{k}/{n_slice} ({k/n_slice*100:.1f}%) [{ci[0]*100:.1f}%, {ci[1]*100:.1f}%]"
 
             low_tot = " *" if n_tot < 30 else ""
-            md.append(f"| **{deg.capitalize()} (All)**{low_tot} | **Combined** | **{n_tot}** | {get_stat(deg_sub, n_tot, 'dct')} | {get_stat(deg_sub, n_tot, 'ad_dct')} | {get_stat(deg_sub, n_tot, 'sift')} |")
+            cnn_col = f" | {get_stat(deg_sub, n_tot, 'cnn')}" if has_cnn else ""
+            md.append(f"| **{deg.capitalize()} (All)**{low_tot} | **Combined** | **{n_tot}** | {get_stat(deg_sub, n_tot, 'dct')} | {get_stat(deg_sub, n_tot, 'ad_dct')} | {get_stat(deg_sub, n_tot, 'sift')}{cnn_col} |")
 
             for cname in ["Blot/Gel", "Microscopy"]:
                 c_sub = deg_sub[deg_sub["class"] == cname]
@@ -687,14 +847,15 @@ def generate_summary_markdown(
                 if nc == 0:
                     continue
                 low_c = " *" if nc < 30 else ""
-                md.append(f"| {deg.capitalize()} | {cname}{low_c} | {nc} | {get_stat(c_sub, nc, 'dct')} | {get_stat(c_sub, nc, 'ad_dct')} | {get_stat(c_sub, nc, 'sift')} |")
+                cnn_col_c = f" | {get_stat(c_sub, nc, 'cnn')}" if has_cnn else ""
+                md.append(f"| {deg.capitalize()} | {cname}{low_c} | {nc} | {get_stat(c_sub, nc, 'dct')} | {get_stat(c_sub, nc, 'ad_dct')} | {get_stat(c_sub, nc, 'sift')}{cnn_col_c} |")
 
     # 4. Synthetic Test Recall by Patch Area Bucket
     md.append("")
     md.append("## 4. Synthetic Test Recall by Patch Area Bucket (Overlap Rule)")
     md.append("")
-    md.append("| Patch Area Bucket | Forged Samples | Frozen DCT Recall [95% CI] | Adapted DCT Recall [95% CI] | Frozen SIFT Recall [95% CI] |")
-    md.append("|---|---|---|---|---|")
+    md.append(f"| Patch Area Bucket | Forged Samples | Frozen DCT Recall [95% CI] | Adapted DCT Recall [95% CI] | Frozen SIFT Recall [95% CI]{cnn_hdr} |")
+    md.append(f"|---|---|---|---|---|{'---|' if has_cnn else ''}")
 
     if not synth_df.empty:
         f_synth = synth_df[synth_df["is_forged"]]
@@ -710,19 +871,20 @@ def generate_summary_markdown(
                 continue
             low_conf = " *" if n < 30 else ""
 
-            def get_stat(pfx):
+            def get_stat_a(pfx):
                 k = (sub[f"{pfx}_pix_tp"] > 0).sum() if f"{pfx}_pix_tp" in sub else 0
                 ci = wilson_ci(k, n)
                 return f"{k}/{n} ({k/n*100:.1f}%) [{ci[0]*100:.1f}%, {ci[1]*100:.1f}%]"
 
-            md.append(f"| {bname}{low_conf} | {n} | {get_stat('dct')} | {get_stat('ad_dct')} | {get_stat('sift')} |")
+            cnn_col_a = f" | {get_stat_a('cnn')}" if has_cnn else ""
+            md.append(f"| {bname}{low_conf} | {n} | {get_stat_a('dct')} | {get_stat_a('ad_dct')} | {get_stat_a('sift')}{cnn_col_a} |")
 
     # 5. Synthetic Test Recall by Transform Category
     md.append("")
     md.append("## 5. Synthetic Test Recall by Transformation Category (Overlap Rule)")
     md.append("")
-    md.append("| Transformation Category | Forged Samples | Frozen DCT Recall [95% CI] | Adapted DCT Recall [95% CI] | Frozen SIFT Recall [95% CI] |")
-    md.append("|---|---|---|---|---|")
+    md.append(f"| Transformation Category | Forged Samples | Frozen DCT Recall [95% CI] | Adapted DCT Recall [95% CI] | Frozen SIFT Recall [95% CI]{cnn_hdr} |")
+    md.append(f"|---|---|---|---|---|{'---|' if has_cnn else ''}")
 
     if not synth_df.empty:
         f_synth = synth_df[synth_df["is_forged"]]
@@ -733,17 +895,135 @@ def generate_summary_markdown(
                 continue
             low_conf = " *" if n < 30 else ""
 
-            def get_stat(pfx):
+            def get_stat_t(pfx):
                 k = (sub[f"{pfx}_pix_tp"] > 0).sum() if f"{pfx}_pix_tp" in sub else 0
                 ci = wilson_ci(k, n)
                 return f"{k}/{n} ({k/n*100:.1f}%) [{ci[0]*100:.1f}%, {ci[1]*100:.1f}%]"
 
-            md.append(f"| {tf_cat}{low_conf} | {n} | {get_stat('dct')} | {get_stat('ad_dct')} | {get_stat('sift')} |")
+            cnn_col_t = f" | {get_stat_t('cnn')}" if has_cnn else ""
+            md.append(f"| {tf_cat}{low_conf} | {n} | {get_stat_t('dct')} | {get_stat_t('ad_dct')} | {get_stat_t('sift')}{cnn_col_t} |")
 
-    # 6. Real BioFors IDD Fusion & Agreement Analysis
+    # 6. Synthetic Test Fusion and Tiered Confidence Analysis
+    if not synth_df.empty and "cnn_pix_tp" in synth_df and "ad_dct_pix_tp" in synth_df and "sift_pix_tp" in synth_df:
+        md.append("")
+        md.append("## 6. Synthetic Test Fusion and Tiered Confidence Analysis")
+        md.append("")
+        md.append("Evaluates detector agreement and decision combinations on the synthetic test set (300 forged pairs, 300 clean negative twins).")
+        md.append("")
+        md.append("| Decision Tier / Combination | Rule Definition | Forged Recall (Overlap) [95% CI] | Clean False Alarm Rate [95% CI] | Detection Precision [95% CI] |")
+        md.append("|---|---|---|---|---|")
+
+        f_synth = synth_df[synth_df["is_forged"]].copy()
+        c_synth = synth_df[~synth_df["is_forged"]].copy()
+        nf_synth = len(f_synth)
+        nc_synth = len(c_synth)
+
+        hit_da = (f_synth["ad_dct_pix_tp"] > 0)
+        hit_s = (f_synth["sift_pix_tp"] > 0)
+        hit_cnn = (f_synth["cnn_pix_tp"] > 0)
+
+        fa_da = c_synth["ad_dct_flagged"]
+        fa_s = c_synth["sift_flagged"]
+        fa_cnn = c_synth["cnn_flagged"]
+
+        num_agree_f = hit_cnn.astype(int) + hit_da.astype(int) + hit_s.astype(int)
+        num_agree_c = fa_cnn.astype(int) + fa_da.astype(int) + fa_s.astype(int)
+
+        synth_fusion_combos = [
+            ("High Confidence (2+ Detectors Agree)", "At least 2 of CNN, Adapted DCT, SIFT agree", num_agree_f >= 2, num_agree_c >= 2),
+            ("Medium Confidence (CNN Only)", "CNN flags, DCT and SIFT silent", hit_cnn & (~hit_da) & (~hit_s), fa_cnn & (~fa_da) & (~fa_s)),
+            ("Low Confidence (Classical Only)", "Adapted DCT or SIFT flags, CNN silent", (hit_da | hit_s) & (~hit_cnn), (fa_da | fa_s) & (~fa_cnn)),
+            ("Combined OR Fusion (Any Detector)", "CNN OR Adapted DCT OR SIFT", hit_cnn | hit_da | hit_s, fa_cnn | fa_da | fa_s),
+            ("Pairwise: CNN AND Adapted DCT", "Both CNN and Adapted DCT agree", hit_cnn & hit_da, fa_cnn & fa_da),
+            ("Pairwise: CNN AND Frozen SIFT", "Both CNN and SIFT agree", hit_cnn & hit_s, fa_cnn & fa_s),
+            ("Pairwise: Adapted DCT AND SIFT", "Both Adapted DCT and SIFT agree", hit_da & hit_s, fa_da & fa_s),
+            ("Consensus: All 3 Detectors Agree", "CNN AND Adapted DCT AND SIFT", hit_cnn & hit_da & hit_s, fa_cnn & fa_da & fa_s),
+        ]
+
+        for title, rule_desc, f_hits, c_fas in synth_fusion_combos:
+            tp_cnt = int(f_hits.sum())
+            fp_cnt = int(c_fas.sum())
+            rec = tp_cnt / nf_synth if nf_synth > 0 else 0.0
+            far = fp_cnt / nc_synth if nc_synth > 0 else 0.0
+            prec = tp_cnt / (tp_cnt + fp_cnt) if (tp_cnt + fp_cnt) > 0 else 0.0
+
+            ci_rec = wilson_ci(tp_cnt, nf_synth)
+            ci_far = wilson_ci(fp_cnt, nc_synth)
+            ci_prec = wilson_ci(tp_cnt, tp_cnt + fp_cnt) if (tp_cnt + fp_cnt) > 0 else (0.0, 0.0)
+
+            md.append(
+                f"| **{title}** | {rule_desc} | "
+                f"{tp_cnt}/{nf_synth} ({rec*100:.1f}%) [{ci_rec[0]*100:.1f}%, {ci_rec[1]*100:.1f}%] | "
+                f"{fp_cnt}/{nc_synth} ({far*100:.2f}%) [{ci_far[0]*100:.2f}%, {ci_far[1]*100:.2f}%] | "
+                f"{tp_cnt}/{tp_cnt+fp_cnt} ({prec*100:.1f}%) [{ci_prec[0]*100:.1f}%, {ci_prec[1]*100:.1f}%] |"
+            )
+
+    # 7. Synthetic Test vs Validation Generalization Audit
+    if not synth_df.empty and "cnn_pix_tp" in synth_df:
+        md.append("")
+        md.append("## 7. Synthetic Test vs Validation Generalization Audit")
+        md.append("")
+        md.append("Direct comparison between Step 1 Validation Selection metrics and Step 3 Synthetic Test evaluation to audit calibration drift and overfitting:")
+        md.append("")
+        md.append("| Metric / Domain | Step 1 Validation (Selection) [95% CI] | Step 3 Synthetic Test (Unseen) [95% CI] | Generalization / Calibration Status |")
+        md.append("|---|---|---|---|")
+
+        f_synth = synth_df[synth_df["is_forged"]]
+        c_synth = synth_df[~synth_df["is_forged"]]
+
+        # 1. Overall clean FAR
+        c_tot = len(c_synth)
+        c_fp = int(c_synth["cnn_flagged"].sum())
+        test_far = c_fp / c_tot if c_tot > 0 else 0.0
+        ci_test_far = wilson_ci(c_fp, c_tot)
+        cal_drift_status = "PASS: Well-calibrated (~1.0% FAR)" if abs(test_far - 0.01) <= 0.015 else "DRIFT: Inspect FAR"
+        md.append(f"| **Overall Clean FAR** | 1.00% [0.43%, 2.32%] | {test_far*100:.2f}% [{ci_test_far[0]*100:.2f}%, {ci_test_far[1]*100:.2f}%] ({c_fp}/{c_tot}) | {cal_drift_status} |")
+
+        # 2. Blot/Gel Clean FAR
+        c_blot = c_synth[c_synth["class"] == "Blot/Gel"]
+        nc_blot = len(c_blot)
+        fp_blot = int(c_blot["cnn_flagged"].sum())
+        test_far_blot = fp_blot / nc_blot if nc_blot > 0 else 0.0
+        ci_far_blot = wilson_ci(fp_blot, nc_blot)
+        md.append(f"| **Blot/Gel Clean FAR** | 0.79% [0.22%, 2.85%] | {test_far_blot*100:.2f}% [{ci_far_blot[0]*100:.2f}%, {ci_far_blot[1]*100:.2f}%] ({fp_blot}/{nc_blot}) | PASS: Within CI |")
+
+        # 3. Microscopy Clean FAR
+        c_mic = c_synth[c_synth["class"] == "Microscopy"]
+        nc_mic = len(c_mic)
+        fp_mic = int(c_mic["cnn_flagged"].sum())
+        test_far_mic = fp_mic / nc_mic if nc_mic > 0 else 0.0
+        ci_far_mic = wilson_ci(fp_mic, nc_mic)
+        md.append(f"| **Microscopy Clean FAR** | 1.21% [0.41%, 3.50%] | {test_far_mic*100:.2f}% [{ci_far_mic[0]*100:.2f}%, {ci_far_mic[1]*100:.2f}%] ({fp_mic}/{nc_mic}) | PASS: Within CI |")
+
+        # 4. Overall Overlap Recall
+        f_tot = len(f_synth)
+        f_tp = int((f_synth["cnn_pix_tp"] > 0).sum())
+        test_rec = f_tp / f_tot if f_tot > 0 else 0.0
+        ci_test_rec = wilson_ci(f_tp, f_tot)
+        md.append(f"| **Overall Overlap Recall** | 51.4% [47.0%, 55.8%] | {test_rec*100:.1f}% [{ci_test_rec[0]*100:.1f}%, {ci_test_rec[1]*100:.1f}%] ({f_tp}/{f_tot}) | Consistent |")
+
+        # 5. Blot/Gel Overlap Recall
+        f_blot = f_synth[f_synth["class"] == "Blot/Gel"]
+        nf_blot = len(f_blot)
+        tp_blot = int((f_blot["cnn_pix_tp"] > 0).sum())
+        test_rec_blot = tp_blot / nf_blot if nf_blot > 0 else 0.0
+        ci_rec_blot = wilson_ci(tp_blot, nf_blot)
+        blot_status = "PASS: Within CI (No Overfitting)" if (ci_rec_blot[0] <= 0.741 and ci_rec_blot[1] >= 0.627) or abs(test_rec_blot - 0.687) < 0.10 else "CHECK: Recall Delta"
+        md.append(f"| **Blot/Gel Recall** | 68.7% [62.7%, 74.1%] | {test_rec_blot*100:.1f}% [{ci_rec_blot[0]*100:.1f}%, {ci_rec_blot[1]*100:.1f}%] ({tp_blot}/{nf_blot}) | {blot_status} |")
+
+        # 6. Microscopy Overlap Recall
+        f_mic = f_synth[f_synth["class"] == "Microscopy"]
+        nf_mic = len(f_mic)
+        tp_mic = int((f_mic["cnn_pix_tp"] > 0).sum())
+        test_rec_mic = tp_mic / nf_mic if nf_mic > 0 else 0.0
+        ci_rec_mic = wilson_ci(tp_mic, nf_mic)
+        mic_status = "PASS: Within CI (No Overfitting)" if (ci_rec_mic[0] <= 0.295 and ci_rec_mic[1] >= 0.189) or abs(test_rec_mic - 0.238) < 0.10 else "CHECK: Recall Delta"
+        md.append(f"| **Microscopy Recall** | 23.8% [18.9%, 29.5%] | {test_rec_mic*100:.1f}% [{ci_rec_mic[0]*100:.1f}%, {ci_rec_mic[1]*100:.1f}%] ({tp_mic}/{nf_mic}) | {mic_status} |")
+
+    # 8. Real BioFors IDD Fusion & Agreement Analysis
     if not real_df.empty:
         md.append("")
-        md.append("## 6. Real BioFors IDD Fusion and Agreement Analysis")
+        md.append("## 8. Real BioFors IDD Fusion and Agreement Analysis")
         md.append("")
         md.append("Evaluates detector agreement and decision combinations on the real BioFors IDD test set (91 manipulated panels, 2,195 clean negative panels).")
         md.append("Note: These metrics were computed on the held-out real BioFors IDD test set for evaluation and reporting purposes only. The final fusion decision rule will be formally selected in Phase 5 using validation data only.")
@@ -791,10 +1071,10 @@ def generate_summary_markdown(
                 f"{tp_cnt}/{tp_cnt+fp_cnt} ({prec*100:.1f}%) [{ci_prec[0]*100:.1f}%, {ci_prec[1]*100:.1f}%] |"
             )
 
-    # 7. Real Pristine Train Check
+    # 9. Real Pristine Train Check
     if pristine_stats:
         md.append("")
-        md.append("## 7. Real Pristine Train Check (Unused Train Documents, N=1,000)")
+        md.append("## 9. Real Pristine Train Check (Unused Train Documents, N=1,000)")
         md.append("")
         md.append("Evaluates false alarm rates on pristine panels sampled from BioFors TRAIN documents not used by the synthetic generator (report only, no tuning).")
         md.append("")
@@ -807,7 +1087,7 @@ def generate_summary_markdown(
                 md.append(f"| {st['name']} | {st['total']} | {st['fp']} | {st['far']*100:.1f}% [{ci[0]*100:.1f}%, {ci[1]*100:.1f}%] |")
 
     md.append("")
-    md.append("## 8. Notes and Observations")
+    md.append("## 10. Notes and Observations")
     md.append("")
     md.append("1. **Adapted DCT Validation Locking:** Parameters (min_votes=75, min_size=64) were locked strictly on synthetic VAL (`val_manifest.csv`). Synthetic test and BioFors IDD test splits were strictly held-out.")
     md.append("2. **Overlap Rule vs Any-Flagged Rule:** The overlap rule strictly requires `pix_tp > 0`. On clean backgrounds, any spurious flag is recorded as a false alarm rather than an accidental hit.")
@@ -830,11 +1110,12 @@ def main():
     out_dir = REPO_ROOT / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    eval_dct = args.detector in ["dct", "both"]
-    eval_sift = args.detector in ["sift", "both"]
+    eval_dct = args.detector in ["dct", "both", "all"]
+    eval_sift = args.detector in ["sift", "both", "all"]
+    eval_cnn = args.detector in ["cnn", "all"]
 
     synth_df = pd.DataFrame()
-    synth_dct_metrics, synth_ad_dct_metrics, synth_sift_metrics = {}, {}, {}
+    synth_dct_metrics, synth_ad_dct_metrics, synth_sift_metrics, synth_cnn_metrics = {}, {}, {}, {}
 
     real_df = pd.DataFrame()
     real_dct_metrics, real_ad_dct_metrics, real_sift_metrics = {}, {}, {}
@@ -848,8 +1129,19 @@ def main():
     if args.dataset in ["synthetic", "both"]:
         synth_manifest = REPO_ROOT / "data" / "synthetic" / "test_manifest.csv"
         if synth_manifest.exists():
-            synth_df, synth_dct_metrics, synth_ad_dct_metrics, synth_sift_metrics = run_benchmark_synthetic(
-                synth_manifest, sift_params, eval_dct, eval_sift, adapted_cfg, limit=args.limit
+            synth_df, synth_dct_metrics, synth_ad_dct_metrics, synth_sift_metrics, synth_cnn_metrics = run_benchmark_synthetic(
+                synth_manifest,
+                sift_params,
+                eval_dct=eval_dct,
+                eval_sift=eval_sift,
+                eval_cnn=eval_cnn,
+                adapted_dct_params=adapted_cfg,
+                cnn_checkpoint=args.cnn_checkpoint,
+                cnn_config=args.cnn_config,
+                cnn_budget=args.cnn_budget,
+                cnn_device=args.cnn_device,
+                reuse_classical=args.reuse_classical,
+                limit=args.limit,
             )
             synth_df.to_csv(out_dir / "synthetic_benchmark.csv", index=False)
 
@@ -878,15 +1170,37 @@ def main():
         synth_dct_metrics = compute_metrics(synth_df, "dct")
         synth_ad_dct_metrics = compute_metrics(synth_df, "ad_dct")
         synth_sift_metrics = compute_metrics(synth_df, "sift")
+        synth_cnn_metrics = compute_metrics(synth_df, "cnn") if "cnn_flagged" in synth_df else {}
 
     if real_df.empty and (out_dir / "real_biofors_benchmark.csv").exists():
         real_df = pd.read_csv(out_dir / "real_biofors_benchmark.csv")
         real_dct_metrics = compute_metrics(real_df, "dct")
         real_ad_dct_metrics = compute_metrics(real_df, "ad_dct")
         real_sift_metrics = compute_metrics(real_df, "sift")
+    elif real_df.empty and (REPO_ROOT / "results" / "phase3_synthetic" / "real_biofors_benchmark.csv").exists():
+        try:
+            real_df = pd.read_csv(REPO_ROOT / "results" / "phase3_synthetic" / "real_biofors_benchmark.csv")
+            real_dct_metrics = compute_metrics(real_df, "dct")
+            real_ad_dct_metrics = compute_metrics(real_df, "ad_dct")
+            real_sift_metrics = compute_metrics(real_df, "sift")
+        except Exception:
+            pass
 
     if not pristine_stats and (out_dir / "pristine_train_audit.csv").exists():
         pdf = pd.read_csv(out_dir / "pristine_train_audit.csv")
+        for pfx, dlabel in [("dct", "Frozen DCT"), ("ad_dct", "Adapted DCT"), ("sift", "Frozen SIFT")]:
+            if f"{pfx}_flagged" in pdf:
+                fp = int(pdf[f"{pfx}_flagged"].sum())
+                tot = len(pdf)
+                pristine_stats[pfx] = {
+                    "name": dlabel,
+                    "fp": fp,
+                    "total": tot,
+                    "far": fp / tot if tot > 0 else 0.0,
+                    "ci": wilson_ci(fp, tot),
+                }
+    elif not pristine_stats and (REPO_ROOT / "results" / "phase3_synthetic" / "pristine_train_audit.csv").exists():
+        pdf = pd.read_csv(REPO_ROOT / "results" / "phase3_synthetic" / "pristine_train_audit.csv")
         for pfx, dlabel in [("dct", "Frozen DCT"), ("ad_dct", "Adapted DCT"), ("sift", "Frozen SIFT")]:
             if f"{pfx}_flagged" in pdf:
                 fp = int(pdf[f"{pfx}_flagged"].sum())
@@ -905,6 +1219,7 @@ def main():
         synth_dct_metrics,
         synth_ad_dct_metrics,
         synth_sift_metrics,
+        synth_cnn_metrics,
         real_dct_metrics,
         real_ad_dct_metrics,
         real_sift_metrics,

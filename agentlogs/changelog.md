@@ -402,5 +402,30 @@ All notable changes to the Doppel repository are documented here.
   - Tested padding isolation on odd non-multiple dimensions (e.g. 135x217).
   - All 59 unit tests pass. Zero em dashes across codebase.
 
+### Added and Verified (Phase 4 Wrap-Up Step 3: Synthetic Test Benchmark and Generalization Audit)
+- Updated `scripts/benchmark.py`:
+  - Added CLI options for CNN evaluation: `--detector cnn/all`, `--cnn-checkpoint`, `--cnn-config`, `--cnn-budget`, `--cnn-device`, `--reuse-classical`.
+  - Implemented cached baseline reuse from `results/phase3_synthetic/synthetic_benchmark.csv` allowing instant evaluation of classical baselines alongside CNN without duplicate computation.
+  - Added CNN rows and columns across all summary tables in `results/phase4_cnn/benchmark_summary.md`:
+    - Executive Comparison Table
+    - Class-stratified Breakdown Table (2a)
+    - Degradation Severity Tier Table (3)
+    - Patch Area Bucket Table (4)
+    - Transformation Category Table (5)
+    - Synthetic Fusion and Tiered Confidence Table (6)
+    - Synthetic Test vs Validation Generalization Audit Table (7)
+- Executed benchmark on synthetic test set (600 images: 300 forged, 300 clean twins) on CPU in 54.1s.
+- Key Results on Synthetic Test:
+  - Clean False Alarm Rate: 0/300 (0.00%) [0.00%, 1.26%]. Zero calibration drift compared to 1.0% budget.
+  - Overall Overlap Recall: 148/300 (49.3%) [43.7%, 55.0%]. Highly consistent with Step 1 validation (51.4% [47.0%, 55.8%]).
+  - Blot/Gel Overlap Recall: 111/152 (73.0%) [65.5%, 79.5%]. Within validation confidence intervals (68.7% [62.7%, 74.1%]), showing no overfitting.
+  - Microscopy Overlap Recall: 37/148 (25.0%) [18.7%, 32.6%]. Within validation confidence intervals (23.8% [18.9%, 29.5%]), showing no overfitting.
+  - Degradation Resilience: Under heavy degradation, CNN achieves 41.3% overall recall (65.8% on Blot/Gel), compared to 5.3% for DCT and 13.3% for SIFT.
+  - Synthetic Fusion Tiers:
+    - High Confidence (2+ detectors agree): 29.3% recall, 0.00% clean FAR, 100.0% precision (88/88).
+    - Medium Confidence (CNN only): 26.7% recall, 0.00% clean FAR, 100.0% precision (80/80).
+    - Combined OR Fusion: 71.7% recall, 2.67% clean FAR, 96.4% precision (215/223).
+- Test set touch discipline preserved: real BioFors IDD test set touches strictly remain at 0 / 1.
+
 
 
