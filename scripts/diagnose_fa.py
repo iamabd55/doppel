@@ -44,12 +44,20 @@ def wilson_ci(k: int, n: int) -> Tuple[float, float]:
     """Compute 95% Wilson score interval for binomial proportion."""
     if n == 0:
         return (0.0, 0.0)
+    if k == 0:
+        z = 1.95996
+        hi = (z**2 / n) / (1.0 + z**2 / n)
+        return (0.0, float(hi))
+    if k == n:
+        z = 1.95996
+        lo = 1.0 / (1.0 + z**2 / n)
+        return (float(lo), 1.0)
     z = 1.95996
     p = k / n
     denom = 1.0 + (z**2) / n
     center = (p + (z**2) / (2 * n)) / denom
     margin = (z * np.sqrt((p * (1 - p) + (z**2) / (4 * n)) / n)) / denom
-    return (max(0.0, center - margin), min(1.0, center + margin))
+    return (float(max(0.0, center - margin)), float(min(1.0, center + margin)))
 
 
 def load_model(checkpoint_path: str, model_type: Optional[str] = None, force_image_head: bool = False, device: str = "cpu") -> Tuple[nn.Module, Dict[str, Any], Dict[str, Any]]:
@@ -76,6 +84,18 @@ def load_model(checkpoint_path: str, model_type: Optional[str] = None, force_ima
                 model_type = "corr"
             else:
                 model_type = "unet"
+
+    # Retrieve git commit from COMMIT file if unknown
+    if cfg.get("git_commit") in [None, "unknown", ""]:
+        commit_file = REPO_ROOT / "COMMIT"
+        if commit_file.exists():
+            try:
+                with open(commit_file, "r", encoding="utf-8") as f:
+                    c = f.read().strip()
+                    if c:
+                        cfg["git_commit"] = c
+            except Exception:
+                pass
 
     has_image_head = bool(force_image_head or cfg.get("image_head", False) or any("image_head_fc" in k for k in state_dict.keys()))
 
@@ -174,6 +194,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model, cfg, ckpt = load_model(args.checkpoint, model_type=args.model, force_image_head=args.image_head, device=args.device)
+    has_image_head = bool(cfg.get("image_head", False) or getattr(model, "has_image_head", False))
     print_training_config(cfg, ckpt, args.checkpoint)
 
     # 1. Load Synthetic Validation dataset
@@ -193,7 +214,7 @@ def main():
     # 2. Load Pristine Panels
     pristine_panels = load_pristine_panels(args.pristine_zip, max_count=args.pristine_subset, seed=42)
 
-    taus = [0.3, 0.5, 0.7, 0.9, 0.95, 0.98]
+    taus = [0.3, 0.5, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.98]
     min_areas = [0, 50, 100, 200, 400, 800, 1600]
 
     synth_clean_records: List[Dict[str, Any]] = []
@@ -466,6 +487,82 @@ def main():
             cols.append(f"{rate:4.1f}% [{lo*100:4.1f}-{hi*100:4.1f}]")
         print(row_str + " | ".join(cols))
 
+    # 7b. Image-Head Compound Decision Rule (s x tau x min_area)
+    if has_image_head:
+        print("\n" + "=" * 115)
+        print("IMAGE-HEAD COMPOUND DECISION RULE: (image_prob >= s) AND (probs >= tau) AND (area >= min_area)")
+        print("Format: FAR Synth [CI] | FAR Pristine [CI] | Recall Forged [CI]")
+        print("=" * 115)
+        candidate_s_vals = [0.5, 0.7, 0.8, 0.85, 0.9, 0.95]
+        summary_taus = [0.5, 0.7, 0.75, 0.8, 0.85]
+        summary_areas = [50, 100, 200, 400]
+
+        hdr = f"{'s':<5} | {'tau':<5} | {'area':<5} | {'Synth Clean FAR':<24} | {'Real Pristine FAR':<24} | {'Forged Recall':<24}"
+        print(hdr)
+        print("-" * len(hdr))
+        printed_rows = 0
+        for s_val in candidate_s_vals:
+            for tau in summary_taus:
+                for area in summary_areas:
+                    s_count = sum(1 for r in synth_clean_records if (r.get("image_prob") is not None and r["image_prob"] >= s_val and r.get(f"flag_{tau}_{area}", False)))
+                    s_rate = s_count / max(1, n_synth_clean)
+                    s_lo, s_hi = wilson_ci(s_count, n_synth_clean)
+
+                    p_count = sum(1 for r in pristine_records if (r.get("image_prob") is not None and r["image_prob"] >= s_val and r.get(f"flag_{tau}_{area}", False)))
+                    p_rate = p_count / max(1, n_pristine)
+                    p_lo, p_hi = wilson_ci(p_count, n_pristine)
+
+                    f_count = sum(1 for r in synth_forged_records if (r.get("image_prob") is not None and r["image_prob"] >= s_val and r.get(f"hit_{tau}_{area}", False)))
+                    f_rate = f_count / max(1, n_forged)
+                    f_lo, f_hi = wilson_ci(f_count, n_forged)
+
+                    if (s_rate <= 0.05 or p_rate <= 0.05) and f_rate > 0.0:
+                        s_str = f"{s_rate*100:4.1f}% [{s_lo*100:4.1f}-{s_hi*100:4.1f}]"
+                        p_str = f"{p_rate*100:4.1f}% [{p_lo*100:4.1f}-{p_hi*100:4.1f}]"
+                        f_str = f"{f_rate*100:4.1f}% [{f_lo*100:4.1f}-{f_hi*100:4.1f}]"
+                        print(f"{s_val:<5.2f} | {tau:<5.2f} | {area:<5d} | {s_str:<24} | {p_str:<24} | {f_str:<24}")
+                        printed_rows += 1
+        if printed_rows == 0:
+            print("[INFO] No points with FAR <= 5% and Recall > 0 found in coarse summary.")
+
+        cond_s = 0.80
+        print(f"\n--- Conditioned FAR Grid on Synthetic Clean Twins (image_prob >= {cond_s:.2f}) ---")
+        header_cond = f"{'tau':<6} | " + " | ".join(f"area>={a:<4}" for a in min_areas)
+        print(header_cond)
+        print("-" * len(header_cond))
+        for tau in taus:
+            cols = []
+            for area in min_areas:
+                count = sum(1 for r in synth_clean_records if (r.get("image_prob") is not None and r["image_prob"] >= cond_s and r[f"flag_{tau}_{area}"]))
+                rate = count / max(1, n_synth_clean) * 100.0
+                lo, hi = wilson_ci(count, n_synth_clean)
+                cols.append(f"{rate:4.1f}% [{lo*100:4.1f}-{hi*100:4.1f}]")
+            print(f"{tau:<6.2f} | " + " | ".join(cols))
+
+        print(f"\n--- Conditioned FAR Grid on Real Pristine Panels (image_prob >= {cond_s:.2f}) ---")
+        print(header_cond)
+        print("-" * len(header_cond))
+        for tau in taus:
+            cols = []
+            for area in min_areas:
+                count = sum(1 for r in pristine_records if (r.get("image_prob") is not None and r["image_prob"] >= cond_s and r[f"flag_{tau}_{area}"]))
+                rate = count / max(1, n_pristine) * 100.0
+                lo, hi = wilson_ci(count, n_pristine)
+                cols.append(f"{rate:4.1f}% [{lo*100:4.1f}-{hi*100:4.1f}]")
+            print(f"{tau:<6.2f} | " + " | ".join(cols))
+
+        print(f"\n--- Conditioned Recall Grid on Forged Images (image_prob >= {cond_s:.2f}) ---")
+        print(header_cond)
+        print("-" * len(header_cond))
+        for tau in taus:
+            cols = []
+            for area in min_areas:
+                count = sum(1 for r in synth_forged_records if (r.get("image_prob") is not None and r["image_prob"] >= cond_s and r[f"hit_{tau}_{area}"]))
+                rate = count / max(1, n_forged) * 100.0
+                lo, hi = wilson_ci(count, n_forged)
+                cols.append(f"{rate:4.1f}% [{lo*100:4.1f}-{hi*100:4.1f}]")
+            print(f"{tau:<6.2f} | " + " | ".join(cols))
+
     # 8. FALSE ALARM BREAKDOWNS (by class, degradation tier)
     print("\n" + "=" * 105)
     print("FALSE ALARM BREAKDOWNS (SYNTHETIC CLEAN & PRISTINE)")
@@ -484,8 +581,8 @@ def main():
             print(f"{'Synth Clean':<16} | {('Class: ' + cls):<24} | {n_sub:<6d} | {c_05_0/n_sub*100:>5.1f}% [{wilson_ci(c_05_0, n_sub)[0]*100:.1f}-{wilson_ci(c_05_0, n_sub)[1]*100:.1f}] | {c_05_50/n_sub*100:>5.1f}% [{wilson_ci(c_05_50, n_sub)[0]*100:.1f}-{wilson_ci(c_05_50, n_sub)[1]*100:.1f}] | {c_09_50/n_sub*100:>5.1f}% [{wilson_ci(c_09_50, n_sub)[0]*100:.1f}-{wilson_ci(c_09_50, n_sub)[1]*100:.1f}]")
 
     # Synthetic clean by degradation tier
-    for tier in ["zero", "light", "medium", "heavy"]:
-        sub = [r for r in synth_clean_records if r.get("tier") == tier]
+    for tier in ["zero", "light", "moderate", "heavy"]:
+        sub = [r for r in synth_clean_records if r.get("tier") in [tier, "medium" if tier == "moderate" else ""]]
         n_sub = len(sub)
         if n_sub > 0:
             c_05_0 = sum(1 for r in sub if r.get("flag_0.5_0", False))
@@ -526,8 +623,8 @@ def main():
         print_recall_slice("Class", cls, [r for r in synth_forged_records if r["class"] == cls])
 
     # Degradation tier
-    for tier in ["zero", "light", "medium", "heavy"]:
-        print_recall_slice("Tier", tier, [r for r in synth_forged_records if r.get("tier") == tier])
+    for tier in ["zero", "light", "moderate", "heavy"]:
+        print_recall_slice("Tier", tier, [r for r in synth_forged_records if r.get("tier") in [tier, "medium" if tier == "moderate" else ""]])
 
     # Transform type
     for tt in sorted(list(set(r["transform_type"] for r in synth_forged_records))):

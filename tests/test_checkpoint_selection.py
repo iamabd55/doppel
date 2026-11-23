@@ -324,3 +324,66 @@ def test_zero_recall_reproduced_and_resolved():
     assert is_better_checkpoint(nonzero_recall_ckpt, zero_recall_ckpt) is True
     assert is_better_checkpoint(zero_recall_ckpt, nonzero_recall_ckpt) is False
 
+
+def test_wilson_ci_properties():
+    """Verify Wilson 95% score interval properties and boundaries."""
+    from detector.cnn.selection import wilson_ci
+
+    # Zero sample size
+    assert wilson_ci(0, 0) == (0.0, 0.0)
+
+    # 0 positive out of 100
+    lo, hi = wilson_ci(0, 100)
+    assert lo == 0.0
+    assert 0.03 < hi < 0.05
+
+    # 100 positive out of 100
+    lo, hi = wilson_ci(100, 100)
+    assert 0.95 < lo < 0.97
+    assert hi == 1.0
+
+    # 50 positive out of 100 (symmetric around 0.5)
+    lo, hi = wilson_ci(50, 100)
+    assert abs((lo + hi) / 2.0 - 0.5) < 1e-5
+    assert 0.39 < lo < 0.41
+    assert 0.59 < hi < 0.61
+
+
+def test_sweep_with_different_budgets():
+    """Verify sweep_thresholds obeys different max_far budgets (1%, 2%, 3%)."""
+    # 100 clean, 100 pristine, 100 forged
+    # Configuration A: tau=0.5, FAR=1.5% on pristine, 0.8% on synth, recall=60%
+    # Configuration B: tau=0.7, FAR=0.5% on pristine, 0.5% on synth, recall=40%
+    synth_clean = [{"flag_0.5_50": i < 1, "flag_0.7_50": False} for i in range(100)]
+    pristine = [{"flag_0.5_50": i < 2, "flag_0.7_50": False} for i in range(100)]
+    forged = [{"hit_0.5_50": i < 60, "hit_0.7_50": i < 40} for i in range(100)]
+
+    # At 1% budget: Config A has pristine FAR 2% > 1%, so Config B (recall 40%) is chosen
+    res_1pct = sweep_thresholds(
+        forged,
+        synth_clean,
+        pristine,
+        thresholds=[0.5, 0.7],
+        min_areas=[50],
+        image_thresholds=[0.0],
+        max_far=0.01,
+    )
+    assert res_1pct["meets_budget"] is True
+    assert res_1pct["best_threshold"] == 0.7
+    assert res_1pct["best_recall"] == 0.40
+
+    # At 2% budget: Config A has pristine FAR 2% <= 2% and synth FAR 1% <= 2%, so Config A (recall 60%) is chosen
+    res_2pct = sweep_thresholds(
+        forged,
+        synth_clean,
+        pristine,
+        thresholds=[0.5, 0.7],
+        min_areas=[50],
+        image_thresholds=[0.0],
+        max_far=0.02,
+    )
+    assert res_2pct["meets_budget"] is True
+    assert res_2pct["best_threshold"] == 0.5
+    assert res_2pct["best_recall"] == 0.60
+
+

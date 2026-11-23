@@ -345,3 +345,23 @@ All notable changes to the Doppel repository are documented here.
 - Colab Assets:
   - Added `scripts/rescore_checkpoints.py` to `scripts/make_colab_code_zip.sh` and rebuilt `data/doppel_code.zip` (84 KB).
   - All 49 unit tests pass. Zero em dashes across the codebase.
+
+### Added and Fixed (Phase 4, Multi-Budget Sweep, Per-Class Operating Points, and FA Diagnostics Enhancements)
+- Multi-Budget Threshold Sweeping:
+  - Added `--budgets` (default: `0.01 0.02 0.03`) to `scripts/rescore_checkpoints.py` and `scripts/select_threshold.py`.
+  - Evaluates each budget independently, finding operating points maximizing recall on forged validation images while constraining false alarm rates <= budget on both synthetic clean twins and real pristine held-out panels, strictly enforcing `recall > 1e-5`.
+- Per-Class Operating Points (Blot/Gel vs Microscopy):
+  - Implemented domain-stratified sweeping in `scripts/select_threshold.py` and `scripts/rescore_checkpoints.py` using manifest class labels.
+  - Generates side-by-side formatted comparison tables across all budgets showing Overall, Blot/Gel, and Microscopy metrics with 95% Wilson confidence intervals.
+  - Outputs structured `configs/cnn_threshold.yaml` containing root parameters (for backward compatibility), `overall`, `per_class` (blot_gel and microscopy), and full multi-budget target specifications.
+  - Documented assumption that panel domain is known at inference time (available via BioFors metadata, supplied by an upstream classifier in product deployment).
+- False Alarm Diagnostics Enhancements (`scripts/diagnose_fa.py`):
+  - Extended pixel threshold grid to include `0.75, 0.80, 0.85` (`taus = [0.3, 0.5, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.98]`).
+  - Fixed missing `'moderate'` degradation tier in breakdown tables (previously mistagged as `'medium'`).
+  - Added image-head compound decision rule evaluation: reports coarse multi-(s, tau, area) operating table and full conditioned FAR grids at `s >= 0.80`.
+- Checkpoint Commit Tracking:
+  - Packaged `COMMIT` file containing exact git hash into `data/doppel_code.zip` via `scripts/make_colab_code_zip.sh`.
+  - Updated `train_cnn.py` and `diagnose_fa.py` to read `REPO_ROOT / "COMMIT"` so Colab execution environments preserve commit provenance rather than displaying "unknown".
+- Validation and Assets:
+  - Extended `scripts/dryrun_notebook.py` to 9 steps (validating `select_threshold.py` alongside `rescore_checkpoints.py`).
+  - Rebuilt `notebooks/phase4_train.ipynb` and `data/doppel_code.zip` (88 KB). Zero em dashes across repository.

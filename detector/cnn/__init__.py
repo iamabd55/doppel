@@ -7,7 +7,7 @@ Models:
 from detector.cnn.unet import ResNetUNet
 from detector.cnn.corr_net import ResNetCorrNet
 from detector.cnn.loss import soft_dice_loss, CombinedBCEDiceLoss
-from detector.cnn.selection import is_better_checkpoint, load_checkpoint, sweep_thresholds
+from detector.cnn.selection import is_better_checkpoint, load_checkpoint, sweep_thresholds, wilson_ci
 from detector.cnn.infer import (
     crop_to_original,
     filter_min_area,
@@ -24,6 +24,7 @@ __all__ = [
     "is_better_checkpoint",
     "load_checkpoint",
     "sweep_thresholds",
+    "wilson_ci",
     "crop_to_original",
     "filter_min_area",
     "pad_to_multiple",

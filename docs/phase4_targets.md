@@ -49,9 +49,10 @@ In Phase 3, we evaluated two frozen classical baselines (Frozen DCT, Frozen SIFT
 ---
 
 ## 3. Methodological Rules and Constraints
-1. **Decision Threshold Protocol:** Detection thresholds will be chosen strictly on synthetic validation data (`val_manifest.csv`) plus the 1,000 real pristine train panels from unused train documents. Thresholds are NEVER tuned or chosen on the BioFors test split or synthetic test split.
+1. **Decision Threshold Protocol:** Detection thresholds will be chosen strictly on synthetic validation data (`val_manifest.csv`) plus all 4,039 real pristine train panels from unused train documents. Thresholds are NEVER tuned or chosen on the BioFors test split or synthetic test split.
 2. **Real Benchmark Evaluation Subset:** The real evaluation benchmark subset is strictly Blot/Gel + Microscopy (exactly 91 forged manipulated panels and 2,195 clean negative panels). Macroscopy and FACS categories are excluded as established in Phase 3.
 3. **Zero Test Set Tuning:** No hyperparameters, loss weights, or detection thresholds will be selected on the BioFors IDD test set or the synthetic test set.
 4. **Document-Level Disjointness:** Train, validation, and test splits are strictly partitioned by document ID. Zero images or donor patches from the validation or test sets are present during training.
 5. **No Blind Resizing:** Scientific images (especially narrow Western blot strips with heights under 30 px) must not be arbitrarily resized via bilinear or bicubic interpolation, as resizing introduces interpolation artifacts and distorts native pixel noise.
 6. **Cautious Language:** Any positive output is framed as a "suspicious region needing human review", never as proof of misconduct.
+7. **Per-Class Operating Thresholds:** Operating thresholds are selected both overall and per-class (Blot/Gel vs Microscopy) across multiple false alarm budgets (1.0%, 2.0%, 3.0%). The image class is assumed known (BioFors provides it; for the product an upstream panel classifier would supply it). Operating points are locked in `configs/cnn_threshold.yaml` with 95% Wilson confidence intervals before test set evaluation.

@@ -33,7 +33,7 @@ from detector.cnn.infer import compute_top_k_mean
 from detector.colab_dataset import ColabDoppelDataset
 
 
-def load_pristine_panels(pristine_zip_path: str, max_count: int = 1000, seed: int = 42) -> List[Tuple[np.ndarray, str]]:
+def load_pristine_panels(pristine_zip_path: str, max_count: int = 1000, seed: int = 42) -> List[Tuple[np.ndarray, str, str]]:
     """Load seeded pristine panels from pristine_heldout.zip."""
     if not os.path.exists(pristine_zip_path):
         print(f"[WARNING] Pristine zip not found: {pristine_zip_path}")
@@ -63,7 +63,7 @@ def load_pristine_panels(pristine_zip_path: str, max_count: int = 1000, seed: in
                 arr = np.frombuffer(img_bytes, dtype=np.uint8)
                 img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if img is not None:
-                    panels.append((img, row["doc_id"]))
+                    panels.append((img, row.get("doc_id", "unknown"), row.get("class", "unknown")))
     print(f"[INFO] Loaded {len(panels)} pristine panels from {pristine_zip_path}")
     return panels
 
@@ -76,7 +76,8 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--val-subset", type=int, default=None, help="Optional subset of validation samples.")
     parser.add_argument("--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine held-out zip.")
     parser.add_argument("--pristine-subset", type=int, default=1000, help="Max pristine panels (default 1000).")
-    parser.add_argument("--max-far", type=float, default=0.01, help="Max false alarm rate budget (default 0.01 = 1.0%).")
+    parser.add_argument("--budgets", type=float, nargs="+", default=[0.01, 0.02, 0.03], help="False alarm rate budgets (default: 0.01 0.02 0.03).")
+    parser.add_argument("--max-far", type=float, default=None, help="Legacy alias for max false alarm rate budget.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
     parser.add_argument("--out-csv", type=str, default=None, help="Optional output CSV path for rescore summary.")
     return parser.parse_args(args)
@@ -85,14 +86,14 @@ def parse_args(args: Optional[List[str]] = None):
 def evaluate_checkpoint(
     model: nn.Module,
     val_loader: DataLoader,
-    pristine_panels: List[Tuple[np.ndarray, str]],
+    pristine_panels: List[Tuple[np.ndarray, str, str]],
     thresholds: List[float],
     min_areas: List[int],
     image_thresholds: List[float],
     device: torch.device,
-    max_far: float = 0.01,
+    budgets: List[float],
 ) -> Dict[str, Any]:
-    """Run validation inference and grid sweep for a single model checkpoint."""
+    """Run validation inference and grid sweep for a single model checkpoint across budgets."""
     model.eval()
 
     all_scores: List[float] = []
@@ -107,6 +108,9 @@ def evaluate_checkpoint(
             mask_gt = batch["mask"].to(device)
             valid_mask = batch["valid_mask"].to(device)
             is_forged = bool(batch["label"].item() > 0.5)
+
+            meta_cls = batch["meta"].get("class", "unknown")
+            cls_name = meta_cls[0] if isinstance(meta_cls, list) else meta_cls
 
             out = model(image, valid_mask=valid_mask)
             if isinstance(out, tuple):
@@ -140,6 +144,7 @@ def evaluate_checkpoint(
             rec: Dict[str, Any] = {
                 "top100_mean": top100_mean,
                 "image_prob": img_prob,
+                "class": cls_name,
             }
 
             for tau in thresholds:
@@ -175,7 +180,7 @@ def evaluate_checkpoint(
     pristine_records: List[Dict[str, Any]] = []
     if len(pristine_panels) > 0:
         with torch.no_grad():
-            for p_img, _ in pristine_panels:
+            for p_img, _, p_cls in pristine_panels:
                 h, w = p_img.shape[:2]
                 pad_multiple = 32
                 target_h = int(np.ceil(h / pad_multiple) * pad_multiple)
@@ -206,6 +211,7 @@ def evaluate_checkpoint(
 
                 p_rec: Dict[str, Any] = {
                     "image_prob": p_img_prob,
+                    "class": p_cls,
                 }
                 for tau in thresholds:
                     pred_bin = (probs_cropped >= tau).astype(np.uint8)
@@ -226,17 +232,56 @@ def evaluate_checkpoint(
     except Exception:
         val_auc = 0.50
 
-    sweep_res = sweep_thresholds(
-        forged_records,
-        clean_records,
-        pristine_records,
-        thresholds=thresholds,
-        min_areas=min_areas,
-        image_thresholds=image_thresholds,
-        max_far=max_far,
-    )
-    sweep_res["roc_auc"] = val_auc
-    return sweep_res
+    # Multi-budget sweeps: Overall, Blot/Gel, and Microscopy
+    budget_results: Dict[float, Dict[str, Any]] = {}
+    f_blot = [r for r in forged_records if r.get("class") == "Blot/Gel"]
+    c_blot = [r for r in clean_records if r.get("class") == "Blot/Gel"]
+    p_blot = [r for r in pristine_records if r.get("class") == "Blot/Gel"]
+
+    f_mic = [r for r in forged_records if r.get("class") == "Microscopy"]
+    c_mic = [r for r in clean_records if r.get("class") == "Microscopy"]
+    p_mic = [r for r in pristine_records if r.get("class") == "Microscopy"]
+
+    for b in budgets:
+        sw_overall = sweep_thresholds(
+            forged_records,
+            clean_records,
+            pristine_records,
+            thresholds=thresholds,
+            min_areas=min_areas,
+            image_thresholds=image_thresholds,
+            max_far=b,
+        )
+        sw_blot = sweep_thresholds(
+            f_blot,
+            c_blot,
+            p_blot,
+            thresholds=thresholds,
+            min_areas=min_areas,
+            image_thresholds=image_thresholds,
+            max_far=b,
+        ) if (len(f_blot) > 0 and len(c_blot) > 0 and len(p_blot) > 0) else sw_overall
+
+        sw_mic = sweep_thresholds(
+            f_mic,
+            c_mic,
+            p_mic,
+            thresholds=thresholds,
+            min_areas=min_areas,
+            image_thresholds=image_thresholds,
+            max_far=b,
+        ) if (len(f_mic) > 0 and len(c_mic) > 0 and len(p_mic) > 0) else sw_overall
+
+        budget_results[b] = {
+            "overall": sw_overall,
+            "blot_gel": sw_blot,
+            "microscopy": sw_mic,
+        }
+
+    return {
+        "roc_auc": val_auc,
+        "budgets": budget_results,
+    }
 
 
 def main():
@@ -293,8 +338,11 @@ def main():
     pristine_panels = load_pristine_panels(args.pristine_zip, max_count=args.pristine_subset)
 
     # Extended sweep grid
-    thresholds = [0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]
+    thresholds = [0.3, 0.5, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
     min_areas = [0, 25, 50, 100, 200, 400, 800, 1200, 1600]
+
+    budgets = sorted(list(set(args.budgets + ([args.max_far] if args.max_far is not None else []))))
+    print(f"[INFO] Evaluating FAR budgets: {[f'{b*100:.1f}%' for b in budgets]}")
 
     rows = []
 
@@ -331,33 +379,55 @@ def main():
             min_areas=min_areas,
             image_thresholds=image_thresholds,
             device=device,
-            max_far=args.max_far,
+            budgets=budgets,
         )
 
         epoch_val = ckpt.get("epoch", _sort_key(ckpt_path))
-        rows.append({
-            "checkpoint": ckpt_path.name,
-            "epoch": epoch_val,
-            "meets_budget": res["meets_budget"],
-            "recall": res["best_recall"],
-            "s": res["best_image_threshold"],
-            "tau": res["best_threshold"],
-            "min_area": res["best_min_area"],
-            "synth_far": res["best_synth_far"],
-            "pristine_far": res["best_pristine_far"],
-            "roc_auc": res["roc_auc"],
-        })
+        for b in budgets:
+            b_info = res["budgets"][b]
+            ov = b_info["overall"]
+            blot = b_info["blot_gel"]
+            mic = b_info["microscopy"]
+
+            rows.append({
+                "checkpoint": ckpt_path.name,
+                "epoch": epoch_val,
+                "budget": b,
+                "meets_budget": ov["meets_budget"],
+                "recall": ov["best_recall"],
+                "s": ov["best_image_threshold"],
+                "tau": ov["best_threshold"],
+                "min_area": ov["best_min_area"],
+                "synth_far": ov["best_synth_far"],
+                "pristine_far": ov["best_pristine_far"],
+                "roc_auc": res["roc_auc"],
+                "blot_meets": blot["meets_budget"],
+                "blot_recall": blot["best_recall"],
+                "blot_s": blot["best_image_threshold"],
+                "blot_tau": blot["best_threshold"],
+                "blot_area": blot["best_min_area"],
+                "blot_synth_far": blot["best_synth_far"],
+                "blot_pristine_far": blot["best_pristine_far"],
+                "mic_meets": mic["meets_budget"],
+                "mic_recall": mic["best_recall"],
+                "mic_s": mic["best_image_threshold"],
+                "mic_tau": mic["best_threshold"],
+                "mic_area": mic["best_min_area"],
+                "mic_synth_far": mic["best_synth_far"],
+                "mic_pristine_far": mic["best_pristine_far"],
+            })
 
     # Print summary table
-    print("\n" + "=" * 115)
-    print("CHECKPOINT RESCORE SUMMARY")
+    print("\n" + "=" * 125)
+    print("CHECKPOINT RESCORE SUMMARY (OVERALL BY BUDGET)")
     print(f"Run directory: {run_dir}")
-    print("=" * 115)
-    header = f"{'Checkpoint':<16} | {'Epoch':<5} | {'Meets Budget':<12} | {'Rec@Budget':<10} | {'s':<5} | {'tau':<5} | {'Area':<6} | {'Synth FAR':<9} | {'Pristine FAR':<12} | {'AUC':<6}"
+    print("=" * 125)
+    header = f"{'Checkpoint':<16} | {'Epoch':<5} | {'Budget':<7} | {'Meets Budget':<12} | {'Rec@Budget':<10} | {'s':<5} | {'tau':<5} | {'Area':<6} | {'Synth FAR':<9} | {'Pristine FAR':<12} | {'AUC':<6}"
     print(header)
-    print("-" * 115)
+    print("-" * 125)
 
     for r in rows:
+        b_str = f"{r['budget']*100:.1f}%"
         meets_str = "True" if r["meets_budget"] else "False"
         rec_str = f"{r['recall']*100:.1f}%"
         s_str = f"{r['s']:.2f}"
@@ -366,15 +436,40 @@ def main():
         s_far_str = f"{r['synth_far']*100:.2f}%"
         p_far_str = f"{r['pristine_far']*100:.2f}%"
         auc_str = f"{r['roc_auc']:.4f}"
-        print(f"{r['checkpoint']:<16} | {r['epoch']:<5} | {meets_str:<12} | {rec_str:<10} | {s_str:<5} | {tau_str:<5} | {area_str:<6} | {s_far_str:<9} | {p_far_str:<12} | {auc_str:<6}")
+        print(f"{r['checkpoint']:<16} | {r['epoch']:<5} | {b_str:<7} | {meets_str:<12} | {rec_str:<10} | {s_str:<5} | {tau_str:<5} | {area_str:<6} | {s_far_str:<9} | {p_far_str:<12} | {auc_str:<6}")
 
-    print("=" * 115 + "\n")
+    print("=" * 125 + "\n")
+
+    # Print per-class side-by-side summary
+    print("=" * 135)
+    print("PER-CLASS OPERATING POINTS SIDE-BY-SIDE")
+    print("Note: Class (Blot/Gel vs Microscopy) is assumed known from metadata or upstream classifier.")
+    print("=" * 135)
+    pc_header = f"{'Checkpoint':<16} | {'Budget':<7} | {'Scope':<12} | {'Meets':<6} | {'Recall':<8} | {'s':<5} | {'tau':<5} | {'Area':<6} | {'Synth FAR':<10} | {'Pristine FAR':<12}"
+    print(pc_header)
+    print("-" * 135)
+
+    for r in rows:
+        b_str = f"{r['budget']*100:.1f}%"
+        # Overall
+        print(f"{r['checkpoint']:<16} | {b_str:<7} | {'Overall':<12} | {str(r['meets_budget']):<6} | {r['recall']*100:>6.1f}% | {r['s']:.2f} | {r['tau']:.2f} | {r['min_area']:<6} | {r['synth_far']*100:>8.2f}% | {r['pristine_far']*100:>10.2f}%")
+        # Blot/Gel
+        print(f"{'':<16} | {'':<7} | {'Blot/Gel':<12} | {str(r['blot_meets']):<6} | {r['blot_recall']*100:>6.1f}% | {r['blot_s']:.2f} | {r['blot_tau']:.2f} | {r['blot_area']:<6} | {r['blot_synth_far']*100:>8.2f}% | {r['blot_pristine_far']*100:>10.2f}%")
+        # Microscopy
+        print(f"{'':<16} | {'':<7} | {'Microscopy':<12} | {str(r['mic_meets']):<6} | {r['mic_recall']*100:>6.1f}% | {r['mic_s']:.2f} | {r['mic_tau']:.2f} | {r['mic_area']:<6} | {r['mic_synth_far']*100:>8.2f}% | {r['mic_pristine_far']*100:>10.2f}%")
+        print("-" * 135)
+
+    print("=" * 135 + "\n")
 
     if args.out_csv is not None:
         out_csv_path = Path(args.out_csv)
         out_csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_csv_path, "w", newline="", encoding="utf-8") as f:
-            fieldnames = ["checkpoint", "epoch", "meets_budget", "recall", "s", "tau", "min_area", "synth_far", "pristine_far", "roc_auc"]
+            fieldnames = [
+                "checkpoint", "epoch", "budget", "meets_budget", "recall", "s", "tau", "min_area", "synth_far", "pristine_far", "roc_auc",
+                "blot_meets", "blot_recall", "blot_s", "blot_tau", "blot_area", "blot_synth_far", "blot_pristine_far",
+                "mic_meets", "mic_recall", "mic_s", "mic_tau", "mic_area", "mic_synth_far", "mic_pristine_far",
+            ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for r in rows:

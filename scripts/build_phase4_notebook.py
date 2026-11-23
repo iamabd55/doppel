@@ -486,6 +486,7 @@ if rescore_run_dir.exists():
         --data-dir "$CONTENT_DATA" \\
         --pristine-zip "$pristine_zip" \\
         --pristine-subset 1000 \\
+        --budgets 0.01 0.02 0.03 \\
         --out-csv "$rescore_out_csv"
 else:
     print(f"[INFO] Run directory {rescore_run_dir} not found. Skipping rescore.")
@@ -625,7 +626,7 @@ print(f"[INFO] Running threshold selection on {chosen_ckpt}...")
     --data-dir "$CONTENT_DATA" \\
     --pristine-zip "/content/data/pristine_heldout.zip" \\
     --out-yaml "$out_yaml" \\
-    --max-far 0.01
+    --budgets 0.01 0.02 0.03
 
 print(f"\\n[SUCCESS] Threshold selection complete. Output saved to {out_yaml}")
 if out_yaml.exists():

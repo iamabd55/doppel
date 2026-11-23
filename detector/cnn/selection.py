@@ -5,9 +5,29 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 
-DEFAULT_THRESHOLDS = [0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]
+DEFAULT_THRESHOLDS = [0.3, 0.5, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
 DEFAULT_MIN_AREAS = [0, 25, 50, 100, 200, 400, 800, 1200, 1600]
 DEFAULT_IMAGE_THRESHOLDS = [0.0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99]
+
+
+def wilson_ci(k: int, n: int) -> Tuple[float, float]:
+    """Compute 95% Wilson score interval for binomial proportion."""
+    if n == 0:
+        return (0.0, 0.0)
+    if k == 0:
+        z = 1.95996
+        hi = (z**2 / n) / (1.0 + z**2 / n)
+        return (0.0, float(hi))
+    if k == n:
+        z = 1.95996
+        lo = 1.0 / (1.0 + z**2 / n)
+        return (float(lo), 1.0)
+    z = 1.95996
+    p = k / n
+    denom = 1.0 + (z**2) / n
+    center = (p + (z**2) / (2 * n)) / denom
+    margin = (z * np.sqrt((p * (1 - p) + (z**2) / (4 * n)) / n)) / denom
+    return (float(max(0.0, center - margin)), float(min(1.0, center + margin)))
 
 
 def load_checkpoint(checkpoint_path: Union[str, Path], map_location: Any = "cpu") -> Dict[str, Any]:
@@ -191,6 +211,10 @@ def sweep_thresholds(
         best_synth_far = fallback_s_far
         best_pristine_far = fallback_p_far
 
+    f_hits = int(round(best_recall * n_forged))
+    c_flags = int(round(best_synth_far * n_clean))
+    p_flags = int(round(best_pristine_far * n_pristine))
+
     return {
         "meets_budget": budget_met,
         "best_image_threshold": best_s,
@@ -199,6 +223,15 @@ def sweep_thresholds(
         "best_recall": best_recall,
         "best_synth_far": best_synth_far,
         "best_pristine_far": best_pristine_far,
+        "n_forged": n_forged,
+        "n_clean": n_clean,
+        "n_pristine": n_pristine,
+        "forged_hits": f_hits,
+        "clean_flags": c_flags,
+        "pristine_flags": p_flags,
+        "recall_ci": wilson_ci(f_hits, n_forged),
+        "synth_far_ci": wilson_ci(c_flags, n_clean),
+        "pristine_far_ci": wilson_ci(p_flags, n_pristine),
         "stats": per_config_stats,
     }
 

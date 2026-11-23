@@ -51,7 +51,16 @@ from detector.colab_dataset import ColabDoppelDataset, colab_collate_fn
 
 
 def get_git_commit() -> str:
-    """Retrieve current git commit hash."""
+    """Retrieve current git commit hash from COMMIT file or git."""
+    commit_file = REPO_ROOT / "COMMIT"
+    if commit_file.exists():
+        try:
+            with open(commit_file, "r", encoding="utf-8") as f:
+                c = f.read().strip()
+                if c and c != "unknown":
+                    return c
+        except Exception:
+            pass
     try:
         res = subprocess.run(
             ["git", "rev-parse", "HEAD"],

@@ -80,13 +80,12 @@ Development phases: 1 DCT baseline, 2 SIFT, 3 synthetic generator, 4 CNN, 5 fusi
 
 ## 3. Current step
 
-**Phase 4 CorrNet v2 Checkpoint Selection Fix and Rescore Suite Complete:**
-- **Zero-Recall Anomaly Diagnosis and Fix:** Identified root causes in `detector/cnn/selection.py`: `meets_budget` previously allowed all-negative predictions (FAR = 0%) to count as valid budget solutions without enforcing `recall > 0`, while coarse grids skipped intermediate thresholds and fallback also selected zero-recall points. Enforced `meets_budget` strictly requires `recall > 1e-5` alongside `synth_clean_far <= 1%` and `pristine_far <= 1%`.
-- **Extended 3D Grid Sweep:** Extended grid in `selection.py`, `train_cnn.py`, and `select_threshold.py` to tau up to 0.95 (`[0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95]`), image threshold s up to 0.99 (`[0.0, 0.3, 0.5, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99]`), and min area up to 1600 (`[0, 25, 50, 100, 200, 400, 800, 1200, 1600]`).
-- **Unit Test Coverage:** Added `test_zero_recall_reproduced_and_resolved` in `tests/test_checkpoint_selection.py` demonstrating that on synthetic scores with AUC ~ 0.8, the extended grid identifies valid operating points with nonzero recall within the 1% FAR budget.
-- **Per-Epoch Logging:** Updated `train_cnn.py` to log chosen `s`, `tau`, `area`, and `meets` status on console and write `val_image_thresh_budget` to `train_log.csv`.
-- **Post-Hoc Checkpoint Rescoring Tool:** Added `scripts/rescore_checkpoints.py` to re-evaluate all `epoch_XX.pt` and `last.pt` checkpoints across the full 3D sweep and print summary markdown/CSV comparison tables.
-- **Notebook & Assets:** Added Cell 10b in `notebooks/phase4_train.ipynb`. Verified end-to-end via 8-step `scripts/dryrun_notebook.py`. Added `rescore_checkpoints.py` to `scripts/make_colab_code_zip.sh` and rebuilt `data/doppel_code.zip` (84 KB). All 49 unit tests pass. Zero em dashes.
+**Phase 4 CorrNet v2 Multi-Budget Sweep, Per-Class Operating Points, and FA Diagnostics Complete:**
+- **Multi-Budget Sweeps (`--budgets`):** Added `--budgets` (default: 0.01 0.02 0.03) to `scripts/rescore_checkpoints.py` and `scripts/select_threshold.py`. Evaluates each budget independently, selecting operating points maximizing recall subject to clean and pristine FAR <= budget with strict `recall > 1e-5` enforcement.
+- **Per-Class Operating Points (Blot/Gel vs Microscopy):** Added domain-stratified sweeping in `select_threshold.py` and `rescore_checkpoints.py`. Generates side-by-side formatted comparison tables across all budgets with 95% Wilson confidence intervals. Writes structured `configs/cnn_threshold.yaml` containing root parameters, `overall`, `per_class` (blot_gel, microscopy), and full multi-budget target specifications. Documented assumption that panel domain is known at test time.
+- **Enhanced False Alarm Diagnostics (`scripts/diagnose_fa.py`):** Extended tau grid with 0.75, 0.80, 0.85, fixed missing `'moderate'` degradation tier breakdown, and added image-head compound decision rule evaluation: coarse multi-(s, tau, area) operating table and conditioned FAR grids at `s >= 0.80`.
+- **Git Commit Provenance:** Packaged `COMMIT` file containing exact git hash into `data/doppel_code.zip` via `scripts/make_colab_code_zip.sh`. Updated `train_cnn.py` and `diagnose_fa.py` to check `REPO_ROOT / "COMMIT"` so Colab execution preserves commit provenance instead of displaying "unknown".
+- **Dry-Run & Verification:** Extended `scripts/dryrun_notebook.py` to 9 steps (validating `select_threshold.py` alongside `rescore_checkpoints.py`). Rebuilt `notebooks/phase4_train.ipynb` and `data/doppel_code.zip` (88 KB). All unit tests pass. Zero em dashes.
 
 (Update this line when a step finishes.)
 

@@ -287,7 +287,7 @@ def main():
         print(f"[PASS] False alarm diagnostics passed in {elapsed_diag:.1f}s. Overlay figure generated.")
 
         # 9. Simulate Rescore Cell: rescore_checkpoints.py on fake Drive corr_v2 run
-        print("\n[STEP 8/8] Executing Checkpoint Rescore Cell (rescore_checkpoints.py)...")
+        print("\n[STEP 8/9] Executing Checkpoint Rescore Cell (rescore_checkpoints.py)...")
         rescore_csv = corr_v2_drive_sync / "rescore_summary.csv"
         cmd_rescore = [
             sys.executable,
@@ -298,6 +298,7 @@ def main():
             "--data-dir", str(content_data),
             "--pristine-zip", str(content_data / "pristine_heldout.zip"),
             "--pristine-subset", "10",
+            "--budgets", "0.01", "0.02", "0.03",
             "--out-csv", str(rescore_csv),
             "--device", "cpu",
         ]
@@ -310,6 +311,34 @@ def main():
 
         assert rescore_csv.exists(), "Missing rescore_summary.csv"
         print(f"[PASS] Rescore checkpoints passed in {elapsed_rescore:.1f}s. Table generated.")
+
+        # 10. Simulate Threshold Selection Cell: select_threshold.py
+        print("\n[STEP 9/9] Executing Threshold Selection Cell (select_threshold.py)...")
+        out_yaml = drive_runs_dir / "cnn_threshold.yaml"
+        cmd_select = [
+            sys.executable,
+            str(doppel_root / "scripts" / "select_threshold.py"),
+            "--checkpoint", str(corr_v2_drive_sync / "last.pt"),
+            "--model", "corr",
+            "--image-head",
+            "--val-manifest", str(val_manifest),
+            "--val-subset", "16",
+            "--data-dir", str(content_data),
+            "--pristine-zip", str(content_data / "pristine_heldout.zip"),
+            "--pristine-subset", "10",
+            "--out-yaml", str(out_yaml),
+            "--budgets", "0.01", "0.02", "0.03",
+            "--device", "cpu",
+        ]
+        t0 = time.time()
+        res_select = subprocess.run(cmd_select, capture_output=True, text=True)
+        elapsed_select = time.time() - t0
+        if res_select.returncode != 0:
+            print(f"[FAIL] select_threshold.py call failed:\nSTDOUT:\n{res_select.stdout}\nSTDERR:\n{res_select.stderr}")
+            sys.exit(1)
+
+        assert out_yaml.exists(), "Missing cnn_threshold.yaml"
+        print(f"[PASS] Threshold selection passed in {elapsed_select:.1f}s. Config YAML generated.")
 
     print("\n======================================================================")
     print("ALL DRY-RUN TESTS PASSED SUCCESSFULLY END-TO-END")
