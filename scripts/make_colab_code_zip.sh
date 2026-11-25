@@ -24,7 +24,7 @@ with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         for p in sorted(Path(base).rglob('*')):
             if p.is_file() and not any(part.startswith('.') or part == '__pycache__' for part in p.parts):
                 zf.write(p, f'doppel/{p}')
-    for extra in ['pyproject.toml', 'COMMIT', 'docs/phase4_targets.md', 'scripts/train_cnn.py', 'scripts/eval_cnn.py', 'scripts/select_threshold.py', 'scripts/diagnose_fa.py', 'scripts/rescore_checkpoints.py']:
+    for extra in ['pyproject.toml', 'COMMIT', 'docs/phase4_targets.md', 'docs/phase5_targets.md', 'docs/phase5_colab_guide.md', 'scripts/train_cnn.py', 'scripts/eval_cnn.py', 'scripts/eval_phase5.py', 'scripts/select_threshold.py', 'scripts/diagnose_fa.py', 'scripts/rescore_checkpoints.py', 'scripts/seam_test_a3.py', 'scripts/verify_real_dev_b4.py', 'notebooks/phase5_train.ipynb']:
         p = Path(extra)
         if p.is_file():
             zf.write(p, f'doppel/{p}')

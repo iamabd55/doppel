@@ -226,6 +226,7 @@ def evaluate(
                 "max_prob": max_prob,
                 "top100_mean": top100_mean,
                 "image_prob": img_prob,
+                "kind": batch["meta"]["kind"][0] if "kind" in batch["meta"] else ("forged" if is_forged else "clean"),
             }
 
             # Evaluate grid over tau and min_area
@@ -365,6 +366,27 @@ def evaluate(
         max_far=0.01,
     )
 
+    # Fine-grained false alarm breakdown on synthetic val negatives
+    pristine_clean_flags = 0
+    unrelated_clean_flags = 0
+    n_pristine_clean = sum(1 for r in clean_records if r.get("kind") == "pristine")
+    n_unrelated_clean = sum(1 for r in clean_records if r.get("kind") == "unrelated_paste")
+    tau_star = sweep_res["best_threshold"]
+    area_star = sweep_res["best_min_area"]
+    s_star = sweep_res.get("best_image_threshold", 0.0)
+
+    for r in clean_records:
+        img_ok = (s_star <= 0.0) or (r.get("image_prob") is not None and float(r["image_prob"]) >= s_star)
+        flagged = bool(r.get(f"flagged_{tau_star}_{area_star}", r.get(f"flag_{tau_star}_{area_star}", False)))
+        if img_ok and flagged:
+            if r.get("kind") == "pristine":
+                pristine_clean_flags += 1
+            elif r.get("kind") == "unrelated_paste":
+                unrelated_clean_flags += 1
+
+    pristine_far_val = (pristine_clean_flags / n_pristine_clean) if n_pristine_clean > 0 else sweep_res["best_synth_far"]
+    unrelated_far_val = (unrelated_clean_flags / n_unrelated_clean) if n_unrelated_clean > 0 else sweep_res["best_synth_far"]
+
     return {
         "val_forged_f1": val_f1,
         "val_forged_mcc": val_mcc,
@@ -375,6 +397,8 @@ def evaluate(
         "val_image_thresh_budget": sweep_res.get("best_image_threshold", 0.0),
         "val_meets_budget": 1 if sweep_res["meets_budget"] else 0,
         "val_synth_clean_far": sweep_res["best_synth_far"],
+        "val_pristine_clean_far": pristine_far_val,
+        "val_unrelated_paste_far": unrelated_far_val,
         "val_pristine_far": sweep_res["best_pristine_far"],
         "forged_count": forged_total,
         "clean_count": clean_total,
@@ -427,14 +451,19 @@ def main():
     with open(out_dir / "config.json", "w", encoding="utf-8") as f:
         json.dump(config_dict, f, indent=2)
 
-    # Instantiate datasets
-    train_manifest = Path(args.data_dir) / "train_manifest.csv"
-    val_manifest = Path(args.data_dir) / "val_manifest.csv"
-
-    if not train_manifest.exists():
-        raise FileNotFoundError(f"Missing train manifest: {train_manifest}")
-    if not val_manifest.exists():
-        raise FileNotFoundError(f"Missing val manifest: {val_manifest}")
+    # Instantiate datasets (supporting synthetic_v3 directories and legacy CSVs)
+    data_path = Path(args.data_dir)
+    if (data_path / "train" / "meta.jsonl").exists():
+        train_manifest = data_path / "train"
+        val_manifest = data_path / "val"
+    elif (data_path / "train_manifest.csv").exists():
+        train_manifest = data_path / "train_manifest.csv"
+        val_manifest = data_path / "val_manifest.csv"
+    elif (data_path / "train").is_dir() and (data_path / "val").is_dir():
+        train_manifest = data_path / "train"
+        val_manifest = data_path / "val"
+    else:
+        raise FileNotFoundError(f"Could not locate train and val splits in {data_path}")
 
     train_dataset = ColabDoppelDataset(
         manifest_path=str(train_manifest),
@@ -662,6 +691,8 @@ def main():
         val_area_budget = val_metrics.get("val_area_budget", 0)
         val_meets_budget = bool(val_metrics["val_meets_budget"] == 1)
         synth_far = val_metrics["val_synth_clean_far"]
+        pristine_clean_far = val_metrics.get("val_pristine_clean_far", synth_far)
+        unrelated_paste_far = val_metrics.get("val_unrelated_paste_far", synth_far)
         pristine_far = val_metrics["val_pristine_far"]
 
         print(
@@ -669,7 +700,7 @@ def main():
             f"Train Loss: {avg_loss:.4f} (F1: {train_f1:.4f}) | "
             f"Val F1: {val_f1:.4f} | AUC: {val_auc:.4f} | "
             f"Rec@Budget: {val_rec_budget*100:.1f}% (s={val_s_budget:.2f}, tau={val_thresh_budget:.2f}, area={val_area_budget}, meets={val_meets_budget}) | "
-            f"SynthFAR: {synth_far*100:.2f}% | PristineFAR: {pristine_far*100:.2f}% | "
+            f"NegFAR: {synth_far*100:.2f}% (Pristine: {pristine_clean_far*100:.2f}%, Unrelated: {unrelated_paste_far*100:.2f}%) | "
             f"({elapsed:.1f}s)"
         )
 

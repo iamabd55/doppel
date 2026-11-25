@@ -102,3 +102,37 @@ def test_colab_dataset_disjointness():
     val_ds = ColabDoppelDataset(str(val_manifest), split="val")
 
     verify_splits_disjointness(train_ds, val_ds)
+
+
+def test_colab_dataset_v3_triplets():
+    v3_train = REPO_ROOT / "data" / "synthetic_v3" / "train"
+    v3_val = REPO_ROOT / "data" / "synthetic_v3" / "val"
+    if not (v3_train.exists() and v3_val.exists()):
+        pytest.skip("synthetic_v3 dataset not found")
+
+    train_ds = ColabDoppelDataset(str(v3_train), split="train", crop_size=(256, 256), augment=True)
+    val_ds = ColabDoppelDataset(str(v3_val), split="val", pad_multiple=32, augment=False)
+
+    assert len(train_ds) == 9000
+    assert len(val_ds) == 900
+    verify_splits_disjointness(train_ds, val_ds)
+
+    # Check that pristine and unrelated_paste have empty masks and label 0
+    # and forged has non-empty mask and label 1
+    found_kinds = set()
+    for idx in range(min(60, len(val_ds))):
+        sample = val_ds[idx]
+        kind = sample["meta"]["kind"]
+        found_kinds.add(kind)
+        mask_sum = float(sample["mask"].sum().item())
+        label_val = float(sample["label"].item())
+
+        if kind in ["pristine", "unrelated_paste"]:
+            assert mask_sum == 0.0, f"Expected 0 mask for {kind}, got {mask_sum}"
+            assert label_val == 0.0, f"Expected 0 label for {kind}, got {label_val}"
+        elif kind == "forged":
+            assert mask_sum > 0.0, f"Expected non-empty mask for forged, got {mask_sum}"
+            assert label_val == 1.0, f"Expected 1 label for forged, got {label_val}"
+
+    assert {"pristine", "forged", "unrelated_paste"}.issubset(found_kinds)
+

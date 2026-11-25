@@ -1,17 +1,22 @@
-"""PyTorch Dataset for Phase 4 CNN Training on Google Colab.
+"""PyTorch Dataset for Phase 5 CNN Training on Google Colab.
 
 Features:
-1. Native Resolution Handling: Does NOT resize images (avoids distorting banding or pixel noise).
+1. Native Resolution Handling: Does not resize images (avoids distorting banding or pixel noise).
    Supports zero-padding to a multiple of 32 (or fixed size) and smart random crops
    guaranteeing forged pixel coverage for positive samples.
 2. Synchronous Joint Geometric Augmentations: Random horizontal/vertical flips and cardinal
    rotations applied jointly to image tensor and ground-truth mask tensor.
 3. Strict Document Split Disjointness: Built-in validation assertions verifying zero document
    overlap between train and validation splits.
-4. Paired-Twin Format: Returns (image, mask_A, label, meta) where label is 1 for forged and 0 for clean.
+4. Triplet / v3 Support:
+   - Supports synthetic v3 dataset (meta.jsonl with pristine, forged, unrelated_paste).
+   - Empty ground-truth masks for pristine and unrelated_paste.
+   - Forged mask is union of source and target copies.
+   - Preserves backward compatibility for legacy CSV manifests.
 """
+import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import cv2
 import numpy as np
@@ -32,8 +37,8 @@ class ColabDoppelDataset(Dataset):
 
     def __init__(
         self,
-        manifest_path: str,
-        images_dir: Optional[str] = None,
+        manifest_path: Union[str, Path],
+        images_dir: Optional[Union[str, Path]] = None,
         split: str = "train",
         crop_size: Optional[Tuple[int, int]] = (256, 256),
         pos_crop_prob: float = 0.50,
@@ -43,7 +48,7 @@ class ColabDoppelDataset(Dataset):
     ):
         """
         Args:
-            manifest_path: Path to train_manifest.csv or val_manifest.csv.
+            manifest_path: Path to meta.jsonl, split directory containing meta.jsonl, or CSV manifest.
             images_dir: Root directory of synthetic data (defaults to manifest parent).
             split: 'train' or 'val'.
             crop_size: (H, W) for random cropping during training (val always returns full image with padding).
@@ -56,8 +61,48 @@ class ColabDoppelDataset(Dataset):
         if not self.manifest_path.exists():
             raise FileNotFoundError(f"Manifest not found: {self.manifest_path}")
 
-        self.df = pd.read_csv(self.manifest_path)
-        self.images_dir = Path(images_dir) if images_dir else self.manifest_path.parent
+        # Determine whether manifest is v3 (jsonl / directory) or legacy CSV
+        self.is_v3 = False
+        if self.manifest_path.is_dir():
+            meta_jsonl = self.manifest_path / "meta.jsonl"
+            if meta_jsonl.exists():
+                self.is_v3 = True
+                self.meta_file = meta_jsonl
+                self.split_dir = self.manifest_path
+            else:
+                # Try finding train_manifest.csv or val_manifest.csv inside directory
+                csv_cand = self.manifest_path / f"{split}_manifest.csv"
+                if csv_cand.exists():
+                    self.is_v3 = False
+                    self.manifest_path = csv_cand
+                    self.meta_file = None
+                    self.split_dir = None
+                else:
+                    raise FileNotFoundError(f"No meta.jsonl or {split}_manifest.csv found in: {self.manifest_path}")
+        elif self.manifest_path.suffix == ".jsonl" or self.manifest_path.name.endswith(".jsonl"):
+            self.is_v3 = True
+            self.meta_file = self.manifest_path
+            self.split_dir = self.manifest_path.parent
+        else:
+            self.is_v3 = False
+            self.meta_file = None
+            self.split_dir = None
+
+        if self.is_v3:
+            records = []
+            with open(self.meta_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line_s = line.strip()
+                    if line_s:
+                        records.append(json.loads(line_s))
+            self.records = records
+            self.df = pd.DataFrame(records)
+            self.images_dir = Path(images_dir) if images_dir else self.split_dir
+        else:
+            self.df = pd.read_csv(self.manifest_path)
+            self.records = self.df.to_dict(orient="records")
+            self.images_dir = Path(images_dir) if images_dir else self.manifest_path.parent
+
         self.split = split
         self.crop_size = crop_size
         self.pos_crop_prob = pos_crop_prob
@@ -69,10 +114,12 @@ class ColabDoppelDataset(Dataset):
     @property
     def doc_ids(self) -> Set[str]:
         """Return the unique document IDs present in this dataset split."""
+        if self.is_v3:
+            return set(str(r["doc"]) for r in self.records if "doc" in r)
         return set(self.df["doc_id"].astype(str).unique())
 
     def __len__(self) -> int:
-        return len(self.df)
+        return len(self.records)
 
     def _pad_to_multiple(
         self, img: np.ndarray, mask: np.ndarray, valid_mask: np.ndarray, multiple: int
@@ -297,75 +344,158 @@ class ColabDoppelDataset(Dataset):
         )
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        row = self.df.iloc[idx]
+        row = self.records[idx]
 
-        f_rel = Path(row["path_F"])
-        a_rel = Path(row["path_A"])
+        if self.is_v3:
+            sample_id = str(row["id"])
+            kind = str(row.get("kind", "forged" if row.get("label", 0) == 1 else "pristine"))
+            doc_id = str(row.get("doc", "unknown"))
+            is_forged = bool(row.get("label", 0) == 1 or kind == "forged")
 
-        # Flexible path resolution for local, Colab, or extracted zip layouts
-        candidates_f = [
-            self.images_dir / f_rel,
-            self.images_dir.parent / f_rel,
-            self.manifest_path.parent / f_rel,
-            self.manifest_path.parent / self.split / f_rel.name,
-            self.manifest_path.parent / f_rel.name,
-        ]
-        f_path = next((p for p in candidates_f if p.exists()), None)
-        if f_path is None:
-            raise FileNotFoundError(f"Could not find image {f_rel} in any candidate location: {[str(p) for p in candidates_f]}")
+            # Locate image file
+            cand_img = [
+                self.images_dir / "images" / f"{sample_id}.png",
+                self.images_dir / f"{sample_id}.png",
+                self.split_dir / "images" / f"{sample_id}.png" if self.split_dir else None,
+            ]
+            f_path = next((p for p in cand_img if p and p.exists()), None)
+            if f_path is None:
+                raise FileNotFoundError(f"Could not find v3 image {sample_id}.png in {[str(p) for p in cand_img if p]}")
 
-        candidates_a = [
-            self.images_dir / a_rel,
-            self.images_dir.parent / a_rel,
-            self.manifest_path.parent / a_rel,
-            self.manifest_path.parent / self.split / a_rel.name,
-            self.manifest_path.parent / a_rel.name,
-        ]
-        a_path = next((p for p in candidates_a if p.exists()), None)
+            img = cv2.imread(str(f_path))
+            if img is None:
+                raise RuntimeError(f"Could not read image: {f_path}")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        img = cv2.imread(str(f_path))
-        if img is None:
-            raise RuntimeError(f"Could not read image: {f_path}")
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            mask_s = None
+            mask_m = None
 
-        is_forged = bool(row["is_forged"])
-        mask_s = None
-        mask_m = None
+            # Empty masks for pristine and unrelated_paste; union mask for forged
+            if is_forged:
+                cand_mask = [
+                    self.images_dir / "mask" / f"{sample_id}.png",
+                    self.split_dir / "mask" / f"{sample_id}.png" if self.split_dir else None,
+                ]
+                a_path = next((p for p in cand_mask if p and p.exists()), None)
+                if a_path:
+                    mask = cv2.imread(str(a_path), cv2.IMREAD_GRAYSCALE)
+                    if mask is None:
+                        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+                else:
+                    mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
-        if is_forged and a_path and a_path.exists():
-            mask = cv2.imread(str(a_path), cv2.IMREAD_GRAYSCALE)
-            if mask is None:
-                mask = np.zeros(img.shape[:2], dtype=np.uint8)
-
-            if self.split == "train":
-                s_rel = Path(row["path_S"]) if "path_S" in row and pd.notna(row["path_S"]) else None
-                m_rel = Path(row["path_M"]) if "path_M" in row and pd.notna(row["path_M"]) else None
-
-                if s_rel is not None:
-                    candidates_s = [
-                        self.images_dir / s_rel,
-                        self.images_dir.parent / s_rel,
-                        self.manifest_path.parent / s_rel,
-                        self.manifest_path.parent / self.split / s_rel.name,
-                        self.manifest_path.parent / s_rel.name,
+                if self.split == "train":
+                    cand_s = [
+                        self.images_dir / "mask_source" / f"{sample_id}.png",
+                        self.split_dir / "mask_source" / f"{sample_id}.png" if self.split_dir else None,
                     ]
-                    s_path = next((p for p in candidates_s if p.exists()), None)
+                    s_path = next((p for p in cand_s if p and p.exists()), None)
                     if s_path:
                         mask_s = cv2.imread(str(s_path), cv2.IMREAD_GRAYSCALE)
 
-                if m_rel is not None:
-                    candidates_m = [
-                        self.images_dir / m_rel,
-                        self.images_dir.parent / m_rel,
-                        self.manifest_path.parent / m_rel,
-                        self.manifest_path.parent / self.split / m_rel.name,
-                        self.manifest_path.parent / m_rel.name,
+                    cand_t = [
+                        self.images_dir / "mask_target" / f"{sample_id}.png",
+                        self.split_dir / "mask_target" / f"{sample_id}.png" if self.split_dir else None,
                     ]
-                    m_path = next((p for p in candidates_m if p.exists()), None)
-                    if m_path:
-                        mask_m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
+                    t_path = next((p for p in cand_t if p and p.exists()), None)
+                    if t_path:
+                        mask_m = cv2.imread(str(t_path), cv2.IMREAD_GRAYSCALE)
+            else:
+                # Strictly empty mask for pristine and unrelated_paste
+                mask = np.zeros(img.shape[:2], dtype=np.uint8)
+
+            meta = {
+                "sample_id": sample_id,
+                "doc_id": doc_id,
+                "base": str(row.get("base", "")),
+                "kind": kind,
+                "is_forged": is_forged,
+                "class": row.get("class", "unknown"),
+                "foreign_doc": str(row.get("foreign_doc", "")),
+            }
+
         else:
-            mask = np.zeros(img.shape[:2], dtype=np.uint8)
+            # Legacy Phase 4 CSV manifest handling
+            f_rel = Path(row["path_F"])
+            a_rel = Path(row["path_A"])
+
+            candidates_f = [
+                self.images_dir / f_rel,
+                self.images_dir.parent / f_rel,
+                self.manifest_path.parent / f_rel,
+                self.manifest_path.parent / self.split / f_rel.name,
+                self.manifest_path.parent / f_rel.name,
+            ]
+            f_path = next((p for p in candidates_f if p.exists()), None)
+            if f_path is None:
+                raise FileNotFoundError(f"Could not find image {f_rel} in any candidate location: {[str(p) for p in candidates_f]}")
+
+            candidates_a = [
+                self.images_dir / a_rel,
+                self.images_dir.parent / a_rel,
+                self.manifest_path.parent / a_rel,
+                self.manifest_path.parent / self.split / a_rel.name,
+                self.manifest_path.parent / a_rel.name,
+            ]
+            a_path = next((p for p in candidates_a if p.exists()), None)
+
+            img = cv2.imread(str(f_path))
+            if img is None:
+                raise RuntimeError(f"Could not read image: {f_path}")
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            is_forged = bool(row["is_forged"])
+            mask_s = None
+            mask_m = None
+
+            if is_forged and a_path and a_path.exists():
+                mask = cv2.imread(str(a_path), cv2.IMREAD_GRAYSCALE)
+                if mask is None:
+                    mask = np.zeros(img.shape[:2], dtype=np.uint8)
+
+                if self.split == "train":
+                    s_rel = Path(row["path_S"]) if "path_S" in row and pd.notna(row["path_S"]) else None
+                    m_rel = Path(row["path_M"]) if "path_M" in row and pd.notna(row["path_M"]) else None
+
+                    if s_rel is not None:
+                        candidates_s = [
+                            self.images_dir / s_rel,
+                            self.images_dir.parent / s_rel,
+                            self.manifest_path.parent / s_rel,
+                            self.manifest_path.parent / self.split / s_rel.name,
+                            self.manifest_path.parent / s_rel.name,
+                        ]
+                        s_path = next((p for p in candidates_s if p.exists()), None)
+                        if s_path:
+                            mask_s = cv2.imread(str(s_path), cv2.IMREAD_GRAYSCALE)
+
+                    if m_rel is not None:
+                        candidates_m = [
+                            self.images_dir / m_rel,
+                            self.images_dir.parent / m_rel,
+                            self.manifest_path.parent / m_rel,
+                            self.manifest_path.parent / self.split / m_rel.name,
+                            self.manifest_path.parent / m_rel.name,
+                        ]
+                        m_path = next((p for p in candidates_m if p.exists()), None)
+                        if m_path:
+                            mask_m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
+            else:
+                mask = np.zeros(img.shape[:2], dtype=np.uint8)
+
+            meta = {
+                "sample_id": row.get("sample_id", f_rel.stem),
+                "pair_id": row.get("pair_id", ""),
+                "doc_id": str(row.get("doc_id", "unknown")),
+                "base": str(row.get("base", "")),
+                "class": row.get("class", "unknown"),
+                "is_forged": is_forged,
+                "kind": "forged" if is_forged else "pristine",
+                "degradation_level": row.get("degradation_level", "zero"),
+                "transform_type": row.get("transform_type", "none"),
+                "num_targets": int(row.get("num_targets", 1)),
+                "is_multi_copy": bool(row.get("is_multi_copy", False)),
+            }
 
         # Valid mask: initially all 1s (unpadded)
         orig_h, orig_w = img.shape[:2]
@@ -406,23 +536,14 @@ class ColabDoppelDataset(Dataset):
         valid_mask_tensor = (valid_mask > 0).astype(np.float32)[None, :, :]
         label_val = 1.0 if is_forged else 0.0
 
-        meta = {
-            "sample_id": row["sample_id"],
-            "pair_id": row["pair_id"],
-            "doc_id": str(row["doc_id"]),
-            "class": row["class"],
-            "is_forged": is_forged,
-            "degradation_level": row.get("degradation_level", "zero"),
-            "transform_type": row.get("transform_type", "none"),
-            "num_targets": int(row.get("num_targets", 1)),
-            "is_multi_copy": bool(row.get("is_multi_copy", False)),
+        meta.update({
             "orig_h": orig_h,
             "orig_w": orig_w,
             "pad_top": pad_box[0],
             "pad_bottom": pad_box[1],
             "pad_left": pad_box[2],
             "pad_right": pad_box[3],
-        }
+        })
 
         try:
             return {

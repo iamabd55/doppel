@@ -8,7 +8,7 @@ import nbformat
 import pytest
 
 from detector.colab_dataset import ColabDoppelDataset
-from scripts import diagnose_fa, eval_cnn, rescore_checkpoints, select_threshold, train_cnn
+from scripts import diagnose_fa, eval_cnn, eval_phase5, rescore_checkpoints, select_threshold, train_cnn
 
 NOTEBOOK_PATH = Path(__file__).resolve().parent.parent / "notebooks" / "phase4_train.ipynb"
 
@@ -265,4 +265,95 @@ def test_rescore_checkpoints_command_args():
             assert parsed.run_dir == "dummy_val"
         except SystemExit as e:
             pytest.fail(f"Cell {cell_idx} rescore_checkpoints command failed parse_args with error: {e}")
+
+
+def test_phase5_notebook_calls():
+    """Verify that phase5_train.ipynb is valid nbformat, dataset kwargs match, and train commands parse."""
+    p5_path = NOTEBOOK_PATH.parent / "phase5_train.ipynb"
+    assert p5_path.exists(), f"Phase 5 notebook not found: {p5_path}"
+    nb = nbformat.read(p5_path, as_version=4)
+
+    sig = inspect.signature(ColabDoppelDataset.__init__)
+    valid_params = set(sig.parameters.keys()) - {"self"}
+
+    call_count = 0
+    train_cmds = []
+
+    for idx, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        code = _clean_python_code(cell.source)
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func_name = getattr(node.func, "id", getattr(node.func, "attr", None))
+                if func_name == "ColabDoppelDataset":
+                    call_count += 1
+                    for kw in node.keywords:
+                        assert kw.arg in valid_params, (
+                            f"Cell {idx}: unexpected keyword argument '{kw.arg}' "
+                            f"in ColabDoppelDataset call. Valid: {sorted(valid_params)}"
+                        )
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.List):
+                elts = node.value.elts
+                if len(elts) >= 2 and isinstance(elts[0], ast.Constant) and elts[0].value == "python3":
+                    second_elt = elts[1]
+                    is_train = False
+                    if isinstance(second_elt, ast.Constant) and "train_cnn.py" in str(second_elt.value):
+                        is_train = True
+                    elif isinstance(second_elt, ast.Call) and "train_cnn.py" in ast.unparse(second_elt):
+                        is_train = True
+
+                    if is_train:
+                        args = []
+                        for elt in elts[2:]:
+                            if isinstance(elt, ast.Constant):
+                                args.append(str(elt.value))
+                            else:
+                                if args and args[-1] == "--model":
+                                    args.append("corr")
+                                else:
+                                    args.append("dummy_val")
+                        train_cmds.append((idx, args))
+
+    assert call_count >= 1, "Expected ColabDoppelDataset calls in phase5 notebook."
+    assert len(train_cmds) >= 2, f"Expected at least 2 train_cnn calls in phase5 notebook, found {len(train_cmds)}"
+
+    for cell_idx, args in train_cmds:
+        try:
+            parsed = train_cnn.parse_args(args)
+            assert parsed.model == "corr"
+        except SystemExit as e:
+            pytest.fail(f"Phase 5 Cell {cell_idx} train_cnn command failed parse_args with error: {e}")
+
+    # Validate select_threshold.py and eval_phase5.py shell commands in phase5_train.ipynb
+    sel_count = 0
+    eval_p5_count = 0
+    for idx, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        lines = cell.source.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith("!python3"):
+                cmd_str = line[len("!python3"):].strip()
+                while cmd_str.endswith("\\") and i + 1 < len(lines):
+                    i += 1
+                    cmd_str = cmd_str[:-1].strip() + " " + lines[i].strip()
+                tokens = shlex.split(cmd_str)
+                if tokens and "select_script" in tokens[0]:
+                    sel_count += 1
+                    args = ["dummy_val" if (t.startswith("$") or t.startswith("/content")) else t for t in tokens[1:]]
+                    select_threshold.parse_args(args)
+                elif tokens and "eval_p5_script" in tokens[0]:
+                    eval_p5_count += 1
+                    args = ["dummy_val" if (t.startswith("$") or t.startswith("/content")) else t for t in tokens[1:]]
+                    eval_phase5.parse_args(args)
+            i += 1
+
+    assert sel_count >= 1, "Expected select_threshold call in phase5_train.ipynb"
+    assert eval_p5_count >= 1, "Expected eval_phase5 call in phase5_train.ipynb"
+
+
 

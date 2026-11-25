@@ -26,6 +26,7 @@ Strict protocol:
 
 import argparse
 import csv
+import json
 import os
 import sys
 import time
@@ -92,7 +93,13 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--model", type=str, choices=["unet", "corr"], default=None, help="Model architecture.")
     parser.add_argument("--image-head", action="store_true", help="Force image head for CorrNet.")
     parser.add_argument(
-        "--val-manifest", type=str, default="data/synthetic/val_manifest.csv", help="Path to val_manifest.csv."
+        "--val-manifest", type=str, default="data/synthetic/val_manifest.csv", help="Path to val_manifest.csv or v3 split dir."
+    )
+    parser.add_argument(
+        "--class-map",
+        type=str,
+        default=None,
+        help="Optional JSON mapping base rel_path to Blot/Gel or Microscopy for v3 manifests.",
     )
     parser.add_argument("--data-dir", type=str, default="data", help="Root data directory.")
     parser.add_argument("--val-subset", type=int, default=None, help="Optional subset of validation samples.")
@@ -324,12 +331,13 @@ def verify_cache_provenance(
         return False, f"Checkpoint {ckpt_path} not found on disk."
 
     # Validation manifest verification
-    if val_manifest.exists():
-        cur_size = val_manifest.stat().st_size
+    val_stat_target = val_manifest / "meta.jsonl" if val_manifest.is_dir() and (val_manifest / "meta.jsonl").exists() else val_manifest
+    if val_stat_target.exists():
+        cur_size = val_stat_target.stat().st_size
         cached_size = int(cache["val_manifest_size"])
         if cur_size != cached_size:
             return False, f"Validation manifest size mismatch ({cur_size} vs cached {cached_size})."
-        cur_mtime = val_manifest.stat().st_mtime
+        cur_mtime = val_stat_target.stat().st_mtime
         cached_mtime = float(cache["val_manifest_mtime"])
         if cur_mtime > cached_mtime + 1.0:
             return False, "Validation manifest was modified after cache generation."
@@ -491,6 +499,13 @@ def main():
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
         print(f"[INFO] Loaded {len(val_dataset)} validation samples.")
 
+        class_map: Dict[str, str] = {}
+        class_map_path = Path(args.class_map) if args.class_map else (REPO_ROOT / "configs" / "v3_panel_classes.json")
+        if class_map_path.exists():
+            with open(class_map_path, "r", encoding="utf-8") as cf:
+                class_map = json.load(cf)
+            print(f"[INFO] Loaded {len(class_map)} panel class mappings from {class_map_path}.")
+
         # 1. Validation split inference
         val_is_forged_list: List[bool] = []
         val_class_list: List[str] = []
@@ -510,6 +525,10 @@ def main():
 
                 meta_cls = batch["meta"].get("class", "unknown")
                 cls_name = meta_cls[0] if isinstance(meta_cls, list) else meta_cls
+                if cls_name == "unknown" and class_map:
+                    meta_base = batch["meta"].get("base", "")
+                    base_name = meta_base[0] if isinstance(meta_base, list) else str(meta_base)
+                    cls_name = class_map.get(base_name, "unknown")
 
                 out = model(img, valid_mask=valid_mask)
                 if isinstance(out, tuple):
@@ -646,6 +665,7 @@ def main():
         pristine_max_area = np.array(pristine_max_area_list, dtype=np.int32)
 
         # Save to cache file
+        val_stat_target = val_manifest / "meta.jsonl" if val_manifest.is_dir() and (val_manifest / "meta.jsonl").exists() else val_manifest
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"[INFO] Caching per-image predictions to {cache_path}...")
         np.savez_compressed(
@@ -669,8 +689,8 @@ def main():
             ckpt_size=ckpt_path.stat().st_size if ckpt_path.exists() else 0,
             ckpt_mtime=ckpt_path.stat().st_mtime if ckpt_path.exists() else 0.0,
             val_manifest_name=str(val_manifest.name),
-            val_manifest_size=val_manifest.stat().st_size if val_manifest.exists() else 0,
-            val_manifest_mtime=val_manifest.stat().st_mtime if val_manifest.exists() else 0.0,
+            val_manifest_size=val_stat_target.stat().st_size if val_stat_target.exists() else 0,
+            val_manifest_mtime=val_stat_target.stat().st_mtime if val_stat_target.exists() else 0.0,
             pristine_zip_name=str(pristine_zip.name),
             pristine_zip_size=pristine_zip.stat().st_size if pristine_zip.exists() else 0,
             pristine_zip_mtime=pristine_zip.stat().st_mtime if pristine_zip.exists() else 0.0,
@@ -723,35 +743,41 @@ def main():
             budget=b,
         )
 
-        sw_bl = fast_slice_sweep(
-            f_blot,
-            c_blot,
-            p_blot,
-            val_image_prob,
-            val_forged_max_overlap_area,
-            val_clean_max_area,
-            pristine_image_prob,
-            pristine_max_area,
-            candidate_s,
-            candidate_thresholds,
-            candidate_areas,
-            budget=b,
-        )
+        if np.sum(f_blot) > 0:
+            sw_bl = fast_slice_sweep(
+                f_blot,
+                c_blot,
+                p_blot,
+                val_image_prob,
+                val_forged_max_overlap_area,
+                val_clean_max_area,
+                pristine_image_prob,
+                pristine_max_area,
+                candidate_s,
+                candidate_thresholds,
+                candidate_areas,
+                budget=b,
+            )
+        else:
+            sw_bl = dict(sw_ov)
 
-        sw_mi = fast_slice_sweep(
-            f_mic,
-            c_mic,
-            p_mic,
-            val_image_prob,
-            val_forged_max_overlap_area,
-            val_clean_max_area,
-            pristine_image_prob,
-            pristine_max_area,
-            candidate_s,
-            candidate_thresholds,
-            candidate_areas,
-            budget=b,
-        )
+        if np.sum(f_mic) > 0:
+            sw_mi = fast_slice_sweep(
+                f_mic,
+                c_mic,
+                p_mic,
+                val_image_prob,
+                val_forged_max_overlap_area,
+                val_clean_max_area,
+                pristine_image_prob,
+                pristine_max_area,
+                candidate_s,
+                candidate_thresholds,
+                candidate_areas,
+                budget=b,
+            )
+        else:
+            sw_mi = dict(sw_ov)
 
         results_by_budget[b] = {
             "overall": sw_ov,
