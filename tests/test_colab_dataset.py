@@ -136,3 +136,28 @@ def test_colab_dataset_v3_triplets():
 
     assert {"pristine", "forged", "unrelated_paste"}.issubset(found_kinds)
 
+
+def test_pristine_dev_halves_disjointness():
+    import json
+
+    split_path = REPO_ROOT / "configs" / "pristine_dev_split.json"
+    held_out_path = REPO_ROOT / "configs" / "held_out_pristine_docs.json"
+    v3_train = REPO_ROOT / "data" / "synthetic_v3" / "train"
+    if not (split_path.exists() and held_out_path.exists()):
+        pytest.skip("pristine_dev_split.json or held_out_pristine_docs.json not found")
+
+    with open(split_path, "r", encoding="utf-8") as f:
+        split_data = json.load(f)
+    with open(held_out_path, "r", encoding="utf-8") as f:
+        all_held_out = set(str(d) for d in json.load(f))
+
+    half_a = set(str(d) for d in split_data["half_a"])
+    half_b = set(str(d) for d in split_data["half_b"])
+
+    assert len(half_a & half_b) == 0, "Half A and Half B must be disjoint"
+    assert (half_a | half_b) == all_held_out, "Half A + Half B must partition all 177 held-out docs"
+
+    if v3_train.exists():
+        train_ds = ColabDoppelDataset(str(v3_train), split="train")
+        assert len(train_ds.doc_ids & all_held_out) == 0, "Held-out docs must not appear in synthetic_v3/train"
+

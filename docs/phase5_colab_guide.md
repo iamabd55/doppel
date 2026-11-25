@@ -1,83 +1,64 @@
-# Phase 5: Google Colab Training Quickstart and Run Guide
+# Phase 5: Platform-Agnostic Training Quickstart (Kaggle and Colab)
 
-This guide documents the procedure for executing the Phase 5 CNN training run on Google Colab T4 GPU.
+This guide documents the procedure for executing the Phase 5 CNN training run on Kaggle GPU (T4 / P100), Google Colab GPU, or a local GPU machine.
 
 ---
 
-## 1. Package Preparation and Google Drive Upload
+## 1. Input Archives / Datasets
 
-The following three archives must be uploaded to your Google Drive under the directory `My Drive/doppel/`:
+Upload or attach these three items (no Google Drive mount is required):
 
-1. `data/synthetic_v3.zip` (723 MB)
-   - Contains `train/`, `val/`, and `test/` splits.
-   - Formatted as triplets (`pristine`, `forged`, `unrelated_paste`) with `meta.jsonl`.
-   - Ground truth masks: empty for pristine and unrelated_paste; union of source and target copies for forged.
+1. `data/synthetic_v3.zip` (or extracted folder `synthetic_v3/`)
+   - Contains `train/`, `val/`, and `test/` splits in triplet format (`pristine`, `forged`, `unrelated_paste`) with `meta.jsonl`.
+   - Ground-truth masks: empty for `pristine` and `unrelated_paste`; union of source and target copies for `forged`.
    - Strictly document-disjoint across splits.
 
-2. `data/pristine_heldout.zip` (174 MB)
+2. `data/pristine_heldout.zip` (or extracted folder `pristine_heldout/`)
    - Contains 4,039 real pristine panels across 177 held-out documents (`pristine_manifest.csv`).
-   - Programmatically verified to have zero document overlap with `synthetic_v3/train`.
-   - Serves as the Real Dev set for verifying Target 1 (clean FAR <= 2.0%).
+   - Split deterministically (`configs/pristine_dev_split.json`, seed=42) by document into two disjoint halves:
+     * **Half A** (88 docs, 1,969 panels): used solely during threshold calibration (`select_threshold.py --dev-half A`).
+     * **Half B** (89 docs, 2,070 panels): held out strictly for Target 1 evaluation (`eval_phase5.py`).
 
 3. `data/doppel_code.zip`
-   - Contains code (`detector/`), scripts (`scripts/train_cnn.py`, `scripts/select_threshold.py`, `scripts/eval_cnn.py`, `scripts/eval_phase5.py`, `scripts/seam_test_a3.py`, `scripts/verify_real_dev_b4.py`), configuration files (including `configs/v3_panel_classes.json`), and target documentation (`docs/phase5_targets.md`).
-   - Generated with `bash scripts/make_colab_code_zip.sh`.
+   - Built with `bash scripts/make_colab_code_zip.sh`.
+   - Contains `detector/`, `configs/` (including `pristine_dev_split.json` and `v3_panel_classes.json`), `scripts/` (`train_cnn.py`, `select_threshold.py`, `eval_phase5.py`, `split_pristine_dev_halves.py`), and `docs/phase5_targets.md`.
 
 ---
 
-## 2. Notebook Workflow (`notebooks/phase5_train.ipynb`)
+## 2. Platform-Agnostic Notebook Workflow (`notebooks/phase5_train.ipynb`)
 
-Open `notebooks/phase5_train.ipynb` in Google Colab and set Runtime to **T4 GPU**.
+Open `notebooks/phase5_train.ipynb` on Kaggle or Colab with GPU enabled.
 
-The notebook executes ONE training run following the strict pre-registered protocol:
+### Cell 1: Single Top Configuration Cell
+- Auto-detects `PLATFORM` (`kaggle`, `colab`, or `local`).
+- Sets all paths in one place:
+  * **Kaggle defaults:** `/kaggle/input/doppel-code/...`, `/kaggle/input/doppel-synthetic-v3/synthetic_v3`, `/kaggle/input/doppel-pristine-heldout/pristine_heldout.zip`, output to `/kaggle/working/runs_phase5/corr_v3`.
+  * **Colab defaults:** `/content/doppel_code.zip`, `/content/synthetic_v3.zip`, `/content/pristine_heldout.zip`, output to `/content/runs_phase5/corr_v3`. No Google Drive mount is required.
+- Configures `EPOCHS = 25`, `SAVE_EVERY = 1`, and `RESUME_MODE = "auto"`.
 
-### Step 1: Environment & GPU Check (Cell 1)
-- Verifies Python, PyTorch, and CUDA availability with `nvidia-smi`.
+### Cell 2: Environment & Source Resolution
+- Verifies CUDA GPU availability and resolves both `.zip` archives and auto-extracted Kaggle `/kaggle/input` directories cleanly.
 
-### Step 2: Mount Drive & Directories (Cell 2)
-- Mounts Google Drive at `/content/drive`.
-- Sets up sync directories: `/content/drive/MyDrive/doppel/runs_phase5/corr_v3`.
+### Cell 3: Dataset & Dev Split Verification
+- Instantiates `ColabDoppelDataset`, asserts train/val document disjointness, verifies empty masks for `pristine` / `unrelated_paste` and union masks for `forged`, and verifies zero overlap between Half A and Half B in `configs/pristine_dev_split.json`.
 
-### Step 3: Fast Local Extraction (Cell 3)
-- Extracts `doppel_code.zip` into `/content/doppel`.
-- Extracts `synthetic_v3.zip` into `/content/data/synthetic_v3`.
-- Copies `pristine_heldout.zip` into `/content/data/pristine_heldout.zip`.
+### Cell 4: 2-Epoch Smoke Test
+- Validates training, per-epoch checkpointing (`--save-every 1`), and `val_recall_budget` logging in `train_log.csv`.
 
-### Step 4: Dataset Sanity Verification (Cell 4)
-- Instantiates `ColabDoppelDataset` on train and val splits.
-- Asserts strict document-level disjointness between train (284 docs) and val (34 docs).
-- Confirms empty masks and label 0.0 for all `pristine` and `unrelated_paste` samples.
-- Confirms non-empty masks and label 1.0 for all `forged` samples.
+### Cell 5: Full Training Run (Save Every Epoch + Auto-Resume)
+- Saves `epoch_01.pt` through `epoch_25.pt`, `last.pt`, and `best.pt` every epoch.
+- Automatically resumes from the highest-epoch checkpoint in `OUT_DIR` if interrupted before epoch 25.
+- **Checkpoint Selection Rule:** `best.pt` is chosen by **validation recall on forged panels at a 1.0% FPR budget over the 600 combined negatives (pristine + unrelated_paste)**, NOT by loss.
+- Logs per-epoch `val_recall_budget` (plus `val_synth_clean_far`, `val_pristine_clean_far`, `val_unrelated_paste_far`) in `train_log.csv`.
 
-### Step 5: Smoke Test (Cell 5)
-- Executes a 2-epoch smoke test on a 64-sample subset to ensure the pipeline runs cleanly.
+### Cell 6: Progression Visualization
+- Displays recent epochs from `train_log.csv` and plots train loss, `val_forged_f1` / `val_roc_auc`, and `val_recall_budget * 100`.
 
-### Step 6: Full Single Training Run (Cell 6)
-- **Model:** ResNetCorrNet v2 (`--image-head`, stride-8 self-correlation, top-4 similarity map).
-- **Epochs:** 25 epochs.
-- **Optimization:** AdamW (lr=3e-4, weight_decay=1e-4), cosine annealing, PyTorch AMP.
-- **Validation Evaluation:** Evaluates after each epoch on `data/synthetic_v3/val` (300 forged, 300 pristine, 300 unrelated_paste).
-- **Checkpoint Selection Rule:** `best.pt` is selected by **validation recall on forged panels at a 1.0% False Positive Rate budget over the 600 combined negatives (pristine plus unrelated_paste)**, NOT by loss.
-- **Drive Synchronization:** Syncs `last.pt`, `best.pt`, and `train_log.csv` to Google Drive after each epoch.
+### Cell 7: Threshold Calibration (Half A ONLY)
+- Runs `select_threshold.py` on `synthetic_v3/val` and **Half A** (`--dev-split-json configs/pristine_dev_split.json --dev-half A`) to produce `cnn_threshold_phase5.yaml`.
 
-### Step 7: Progression Visualization (Cell 7)
-- Plots training loss, validation pixel metrics (F1 and ROC-AUC), and validation recall at the 1% negative FPR budget.
-
-### Step 8: Threshold Calibration (Cell 8)
-- Sweeps image-head threshold `s`, pixel threshold `tau`, and `min_area` on validation and held-out pristine panels across budgets (1%, 2%, 3%).
-- Writes `configs/cnn_threshold_phase5.yaml`.
-
-### Step 9: Target Verification on Held-Out Sets (Cell 9)
-- Runs `scripts/eval_phase5.py` against `best.pt` and `cnn_threshold_phase5.yaml`.
-- Evaluates Target 1: Real Pristine Dev FAR <= 2.0% on the 177 held-out documents (reporting both calibrated and val-only operating points).
-- Evaluates Target 2: Synthetic v3 test `unrelated_paste` FPR <= 1.5x pristine FPR and <= 3.0% absolute.
-- Evaluates Target 3: Synthetic v3 test forged recall >= 30.0% at the operating threshold.
-- Explicitly holds out the locked real BioFors IDD test split.
-
----
-
-## 3. Strict Integrity Guarantees
-
-1. Zero document leakage between training documents and held-out test/dev sets.
-2. The locked real BioFors IDD test set (`data/biofors/splits/test_idd_manifest.csv`) is never loaded, evaluated, or touched during this run.
-3. No em dashes appear in code, markdown, logs, or comments.
+### Cell 8: Target Verification (Half B + `synthetic_v3/test`)
+- Runs `eval_phase5.py`:
+  * **Target 1:** Measured strictly on disjoint **Half B** (`<= 2.0%` FAR), reported both at the Half-A-calibrated threshold and at the val-only threshold stored inside `best.pt`.
+  * **Targets 2 & 3:** Measured on `synthetic_v3/test` (`unrelated_paste` FPR `<= 1.5x` pristine FPR and `<= 3.0%` absolute; `forged` recall `>= 30.0%`).
+  * Real BioFors IDD test split remains completely untouched.

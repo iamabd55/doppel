@@ -86,12 +86,21 @@ def test_train_cnn_command_args():
 
                     if is_train:
                         args = []
+                        int_flags = {"--epochs", "--batch-size", "--subset", "--crop-size", "--pristine-val-count", "--save-every"}
+                        float_flags = {"--lr", "--weight-decay"}
                         for elt in elts[2:]:
                             if isinstance(elt, ast.Constant):
                                 args.append(str(elt.value))
                             else:
-                                if args and args[-1] == "--model":
+                                prev = args[-1] if args else ""
+                                if prev == "--model":
                                     args.append("corr")
+                                elif prev == "--device":
+                                    args.append("cpu")
+                                elif prev in int_flags:
+                                    args.append("1")
+                                elif prev in float_flags:
+                                    args.append("0.001")
                                 else:
                                     args.append("dummy_val")
                         train_cmds.append((idx, args))
@@ -306,12 +315,21 @@ def test_phase5_notebook_calls():
 
                     if is_train:
                         args = []
+                        int_flags = {"--epochs", "--batch-size", "--subset", "--crop-size", "--pristine-val-count", "--save-every"}
+                        float_flags = {"--lr", "--weight-decay"}
                         for elt in elts[2:]:
                             if isinstance(elt, ast.Constant):
                                 args.append(str(elt.value))
                             else:
-                                if args and args[-1] == "--model":
+                                prev = args[-1] if args else ""
+                                if prev == "--model":
                                     args.append("corr")
+                                elif prev == "--device":
+                                    args.append("cpu")
+                                elif prev in int_flags:
+                                    args.append("1")
+                                elif prev in float_flags:
+                                    args.append("0.001")
                                 else:
                                     args.append("dummy_val")
                         train_cmds.append((idx, args))
@@ -354,6 +372,12 @@ def test_phase5_notebook_calls():
 
     assert sel_count >= 1, "Expected select_threshold call in phase5_train.ipynb"
     assert eval_p5_count >= 1, "Expected eval_phase5 call in phase5_train.ipynb"
+
+    full_source = "\n".join(c.source for c in nb.cells)
+    assert "drive.mount" not in full_source, "phase5_train.ipynb must not depend on Google Drive mounting."
+    assert "/kaggle/input" in full_source and "/kaggle/working" in full_source, "Missing Kaggle defaults."
+    assert "--dev-split-json" in full_source and "--dev-half A" in full_source, "Missing Half A / Half B split usage."
+    assert "--resume" in full_source and "--save-every" in full_source, "Missing resume / per-epoch checkpointing."
 
 
 

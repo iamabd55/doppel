@@ -23,10 +23,10 @@ Phase 5 addresses this by training on `data/synthetic_v3` (irregular blob masks,
 The following targets are formally pre-registered and locked prior to training. Model checkpoint selection and threshold calibration will be conducted on validation data, and these targets will be verified on the held-out test sets.
 
 ### Target 1: Real Held-Out Pristine False Alarm Rate
-* **Dataset:** Real pristine panels from the 177 held-out train documents (`configs/held_out_pristine_docs.json`).
-* **Evaluation Set:** Real Dev set (pristine panels only, strictly disjoint from synthetic train documents).
-* **Metric:** False Alarm Rate (FAR) on clean real panels under the frozen threshold.
-* **Target:** **<= 2.0%** clean false alarm rate.
+* **Dataset:** Real pristine panels from the 177 held-out train documents (`configs/held_out_pristine_docs.json`), split by document with a fixed seed (`configs/pristine_dev_split.json`) into two disjoint halves: **Half A** (88 docs, 1,969 panels, used solely for threshold calibration) and **Half B** (89 docs, 2,070 panels, reserved strictly for held-out evaluation).
+* **Evaluation Set:** **Half B** of the real held-out pristine dev set (disjoint from both `synthetic_v3/train` and Half A calibration documents).
+* **Metric:** False Alarm Rate (FAR) on clean real Half B panels under the frozen threshold (and also reported at the `best.pt` val-only threshold, which never saw any real panels).
+* **Target:** **<= 2.0%** clean false alarm rate on **Half B**.
 
 ### Target 2: Seam Shortcut Suppression on Synthetic v3 Test
 * **Dataset:** `data/synthetic_v3/test` (300 triplets: 300 pristine, 300 unrelated_paste, 300 forged).

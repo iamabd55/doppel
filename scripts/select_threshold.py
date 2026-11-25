@@ -49,37 +49,68 @@ from detector.colab_dataset import ColabDoppelDataset
 
 
 def load_all_pristine_panels(
-    pristine_zip_path: str, max_count: Optional[int] = None, seed: int = 42
+    pristine_zip_path: str,
+    max_count: Optional[int] = None,
+    seed: int = 42,
+    allowed_docs: Optional[set] = None,
 ) -> List[Tuple[np.ndarray, str, str]]:
-    """Load pristine panels from pristine_heldout.zip with doc_id and class."""
-    if not os.path.exists(pristine_zip_path):
-        print(f"[WARNING] Pristine zip not found at {pristine_zip_path}")
+    """Load pristine panels from pristine_heldout.zip or an extracted directory."""
+    src_path = Path(pristine_zip_path)
+    if not src_path.exists():
+        print(f"[WARNING] Pristine source not found at {pristine_zip_path}")
         return []
 
     panels = []
-    print(f"[INFO] Reading pristine panels from {pristine_zip_path}...")
-    with zipfile.ZipFile(pristine_zip_path, "r") as zf:
-        manifest_names = [n for n in zf.namelist() if n.endswith("pristine_manifest.csv")]
-        if not manifest_names:
+    if src_path.is_dir():
+        print(f"[INFO] Reading pristine panels from directory {src_path}...")
+        base_dir = src_path
+        manifest_file = base_dir / "pristine_manifest.csv"
+        if not manifest_file.exists() and (base_dir / "pristine_heldout" / "pristine_manifest.csv").exists():
+            base_dir = base_dir / "pristine_heldout"
+            manifest_file = base_dir / "pristine_manifest.csv"
+        if not manifest_file.exists():
             return []
-        manifest_bytes = zf.read(manifest_names[0]).decode("utf-8")
-        reader = csv.DictReader(manifest_bytes.splitlines())
-        rows = list(reader)
-
+        with open(manifest_file, "r", encoding="utf-8") as mf:
+            rows = list(csv.DictReader(mf))
+        if allowed_docs is not None:
+            rows = [r for r in rows if str(r.get("doc_id", "")) in allowed_docs]
         if max_count is not None and max_count > 0 and len(rows) > max_count:
             rng = np.random.RandomState(seed)
             chosen_indices = rng.choice(len(rows), size=max_count, replace=False)
             rows = [rows[i] for i in chosen_indices]
-
         for r in rows:
-            arc_name = f"pristine_heldout/{r['path']}"
-            if arc_name in zf.namelist():
-                img_bytes = zf.read(arc_name)
-                arr = np.frombuffer(img_bytes, dtype=np.uint8)
-                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            img_path = base_dir / r["path"]
+            if img_path.exists():
+                img = cv2.imread(str(img_path))
                 if img is not None:
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    panels.append((img, r.get("doc_id", "unknown"), r.get("class", "unknown")))
+                    panels.append((img, str(r.get("doc_id", "unknown")), r.get("class", "unknown")))
+    else:
+        print(f"[INFO] Reading pristine panels from {pristine_zip_path}...")
+        with zipfile.ZipFile(pristine_zip_path, "r") as zf:
+            manifest_names = [n for n in zf.namelist() if n.endswith("pristine_manifest.csv")]
+            if not manifest_names:
+                return []
+            manifest_bytes = zf.read(manifest_names[0]).decode("utf-8")
+            reader = csv.DictReader(manifest_bytes.splitlines())
+            rows = list(reader)
+            if allowed_docs is not None:
+                rows = [r for r in rows if str(r.get("doc_id", "")) in allowed_docs]
+
+            if max_count is not None and max_count > 0 and len(rows) > max_count:
+                rng = np.random.RandomState(seed)
+                chosen_indices = rng.choice(len(rows), size=max_count, replace=False)
+                rows = [rows[i] for i in chosen_indices]
+
+            for r in rows:
+                arc_name = f"pristine_heldout/{r['path']}"
+                if arc_name in zf.namelist():
+                    img_bytes = zf.read(arc_name)
+                    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if img is not None:
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        panels.append((img, str(r.get("doc_id", "unknown")), r.get("class", "unknown")))
 
     print(f"[INFO] Loaded {len(panels)} pristine held-out panels.")
     return panels
@@ -104,7 +135,20 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--data-dir", type=str, default="data", help="Root data directory.")
     parser.add_argument("--val-subset", type=int, default=None, help="Optional subset of validation samples.")
     parser.add_argument(
-        "--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine held-out zip."
+        "--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine held-out zip or extracted directory."
+    )
+    parser.add_argument(
+        "--dev-split-json",
+        type=str,
+        default=None,
+        help="Optional path to configs/pristine_dev_split.json splitting held-out docs into Half A / Half B.",
+    )
+    parser.add_argument(
+        "--dev-half",
+        type=str,
+        choices=["A", "B", "all"],
+        default=None,
+        help="Which pristine dev half to use ('A' calibration, 'B' eval, 'all'). Defaults to 'A' when --dev-split-json is passed.",
     )
     parser.add_argument(
         "--pristine-subset",
@@ -296,6 +340,7 @@ def verify_cache_provenance(
     has_image_head: bool,
     candidate_thresholds: List[float],
     candidate_areas: List[int],
+    dev_half: str = "all",
 ) -> Tuple[bool, str]:
     """Verify that cached per-image outputs match current checkpoint, inputs, and options."""
     req_keys = [
@@ -344,18 +389,29 @@ def verify_cache_provenance(
     else:
         return False, f"Validation manifest {val_manifest} not found on disk."
 
-    # Pristine archive verification
-    if pristine_zip.exists():
-        cur_size = pristine_zip.stat().st_size
+    # Pristine archive / directory verification
+    pristine_stat_target = pristine_zip
+    if pristine_zip.is_dir():
+        if (pristine_zip / "pristine_manifest.csv").exists():
+            pristine_stat_target = pristine_zip / "pristine_manifest.csv"
+        elif (pristine_zip / "pristine_heldout" / "pristine_manifest.csv").exists():
+            pristine_stat_target = pristine_zip / "pristine_heldout" / "pristine_manifest.csv"
+
+    if pristine_stat_target.exists():
+        cur_size = pristine_stat_target.stat().st_size
         cached_size = int(cache["pristine_zip_size"])
         if cur_size != cached_size:
             return False, f"Pristine zip size mismatch ({cur_size} vs cached {cached_size})."
-        cur_mtime = pristine_zip.stat().st_mtime
+        cur_mtime = pristine_stat_target.stat().st_mtime
         cached_mtime = float(cache["pristine_zip_mtime"])
         if cur_mtime > cached_mtime + 1.0:
             return False, "Pristine zip was modified after cache generation."
     else:
-        return False, f"Pristine zip {pristine_zip} not found on disk."
+        return False, f"Pristine source {pristine_zip} not found on disk."
+
+    cached_dev_half = str(cache["dev_split_half"]) if "dev_split_half" in cache else "all"
+    if cached_dev_half != dev_half:
+        return False, f"Dev half mismatch (requested '{dev_half}' vs cached '{cached_dev_half}')."
 
     # Subset options verification
     cached_val_sub = int(cache["val_subset"])
@@ -421,7 +477,24 @@ def main():
 
     pristine_zip = Path(args.pristine_zip)
     if not pristine_zip.exists():
-        raise FileNotFoundError(f"Missing pristine zip: {pristine_zip}")
+        raise FileNotFoundError(f"Missing pristine source: {pristine_zip}")
+
+    allowed_pristine_docs = None
+    effective_dev_half = args.dev_half or ("A" if args.dev_split_json else "all")
+    if args.dev_split_json:
+        split_path = Path(args.dev_split_json)
+        if not split_path.exists():
+            raise FileNotFoundError(f"Missing dev split JSON: {split_path}")
+        with open(split_path, "r", encoding="utf-8") as sf:
+            split_data = json.load(sf)
+        half_a = set(str(d) for d in split_data["half_a"])
+        half_b = set(str(d) for d in split_data["half_b"])
+        assert half_a.isdisjoint(half_b), "FATAL: Overlap between Half A and Half B in dev split JSON!"
+        if effective_dev_half == "A":
+            allowed_pristine_docs = half_a
+        elif effective_dev_half == "B":
+            allowed_pristine_docs = half_b
+        print(f"[VERIFIED] Dev split disjoint (Half A: {len(half_a)} docs, Half B: {len(half_b)} docs). Using half='{effective_dev_half}'.")
 
     ckpt = load_checkpoint(ckpt_path, map_location=device)
     config = ckpt.get("config", {})
@@ -452,6 +525,7 @@ def main():
             has_image_head=has_image_head,
             candidate_thresholds=candidate_thresholds,
             candidate_areas=candidate_areas,
+            dev_half=effective_dev_half,
         )
         if valid:
             print(f"[SUCCESS] Cache provenance verified for {ckpt_path.name} (inputs match). Loading per-image outputs...")
@@ -592,7 +666,11 @@ def main():
                     print(f"  Processed {idx + 1}/{len(val_dataset)} validation images ({time.time() - t0_val:.1f}s)")
 
         # 2. Pristine held-out inference
-        pristine_panels = load_all_pristine_panels(args.pristine_zip, max_count=args.pristine_subset)
+        pristine_panels = load_all_pristine_panels(
+            args.pristine_zip,
+            max_count=args.pristine_subset,
+            allowed_docs=allowed_pristine_docs,
+        )
         pristine_class_list: List[str] = []
         pristine_image_prob_list: List[float] = []
         pristine_max_prob_list: List[float] = []
@@ -668,6 +746,13 @@ def main():
         val_stat_target = val_manifest / "meta.jsonl" if val_manifest.is_dir() and (val_manifest / "meta.jsonl").exists() else val_manifest
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"[INFO] Caching per-image predictions to {cache_path}...")
+        pristine_stat_target = pristine_zip
+        if pristine_zip.is_dir():
+            if (pristine_zip / "pristine_manifest.csv").exists():
+                pristine_stat_target = pristine_zip / "pristine_manifest.csv"
+            elif (pristine_zip / "pristine_heldout" / "pristine_manifest.csv").exists():
+                pristine_stat_target = pristine_zip / "pristine_heldout" / "pristine_manifest.csv"
+
         np.savez_compressed(
             cache_path,
             val_is_forged=val_is_forged,
@@ -692,10 +777,11 @@ def main():
             val_manifest_size=val_stat_target.stat().st_size if val_stat_target.exists() else 0,
             val_manifest_mtime=val_stat_target.stat().st_mtime if val_stat_target.exists() else 0.0,
             pristine_zip_name=str(pristine_zip.name),
-            pristine_zip_size=pristine_zip.stat().st_size if pristine_zip.exists() else 0,
-            pristine_zip_mtime=pristine_zip.stat().st_mtime if pristine_zip.exists() else 0.0,
+            pristine_zip_size=pristine_stat_target.stat().st_size if pristine_stat_target.exists() else 0,
+            pristine_zip_mtime=pristine_stat_target.stat().st_mtime if pristine_stat_target.exists() else 0.0,
             val_subset=args.val_subset if args.val_subset is not None else -1,
             pristine_subset=args.pristine_subset if args.pristine_subset is not None else -1,
+            dev_split_half=effective_dev_half,
         )
         print(f"[SUCCESS] Prediction cache saved ({os.path.getsize(cache_path) / 1024:.1f} KB).")
 

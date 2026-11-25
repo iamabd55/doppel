@@ -4,7 +4,9 @@ eval_phase5.py: Evaluate a trained Phase 5 CNN checkpoint against Targets 1, 2, 
 
 Why this exists:
 Evaluates the newly trained Phase 5 model and its selected operating threshold on:
-1. Real Pristine Dev Set (4,039 panels from 177 held-out documents) -> Target 1.
+1. Real Pristine Dev Set Half B (89 held-out docs, disjoint from Half A calibration
+   and synthetic_v3/train) -> Target 1. Also reports Target 1 on Half B at the
+   val-only threshold saved inside best.pt.
 2. Synthetic v3 Test Set (300 pristine, 300 unrelated_paste, 300 forged) -> Targets 2 & 3.
 
 Never touches the locked real BioFors IDD test split.
@@ -17,7 +19,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -49,11 +51,35 @@ def parse_args(args: Optional[List[str]] = None):
     parser.add_argument("--config", type=str, default=None, help="Path to calibrated threshold YAML (optional).")
     parser.add_argument("--budget", type=float, default=0.01, help="Operating FAR budget to evaluate (default 0.01).")
     parser.add_argument("--test-dir", type=str, default="data/synthetic_v3/test", help="Path to synthetic_v3/test split.")
-    parser.add_argument("--pristine-zip", type=str, default="data/pristine_heldout.zip", help="Path to pristine_heldout.zip.")
+    parser.add_argument(
+        "--pristine-zip",
+        type=str,
+        default="data/pristine_heldout.zip",
+        help="Path to pristine_heldout.zip or extracted directory.",
+    )
+    parser.add_argument(
+        "--dev-split-json",
+        type=str,
+        default="configs/pristine_dev_split.json",
+        help="Path to configs/pristine_dev_split.json defining disjoint Half A and Half B.",
+    )
     parser.add_argument("--class-map", type=str, default="configs/v3_panel_classes.json", help="Optional JSON class map.")
     parser.add_argument("--out-dir", type=str, default="results/phase5", help="Directory to save CSV and summary JSON.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device.")
     return parser.parse_args(args)
+
+
+def load_and_verify_dev_split(split_path: Path) -> Tuple[Set[str], Set[str]]:
+    """Load Half A and Half B doc sets and programmatically assert zero overlap."""
+    if not split_path.exists():
+        raise FileNotFoundError(f"Missing dev split JSON: {split_path}")
+    with open(split_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    half_a = set(str(d) for d in data["half_a"])
+    half_b = set(str(d) for d in data["half_b"])
+    assert len(half_a) > 0 and len(half_b) > 0, "Dev split halves must be non-empty"
+    assert half_a.isdisjoint(half_b), f"FATAL: Overlap between Half A and Half B: {half_a & half_b}"
+    return half_a, half_b
 
 
 def get_thresholds_for_class(
@@ -73,23 +99,74 @@ def get_thresholds_for_class(
     return img_t, pix_t, min_a
 
 
+def iter_pristine_rows_and_images(
+    pristine_src: Path,
+    allowed_docs: Set[str],
+    forbidden_docs: Set[str],
+) -> Iterable[Tuple[Dict[str, str], np.ndarray]]:
+    """Yield (row, img_rgb) strictly for docs in allowed_docs from a zip or directory."""
+    if not pristine_src.exists():
+        raise FileNotFoundError(f"Pristine dev source not found: {pristine_src}")
+
+    if pristine_src.is_dir():
+        base_dir = pristine_src
+        manifest_file = base_dir / "pristine_manifest.csv"
+        if not manifest_file.exists() and (base_dir / "pristine_heldout" / "pristine_manifest.csv").exists():
+            base_dir = base_dir / "pristine_heldout"
+            manifest_file = base_dir / "pristine_manifest.csv"
+        if not manifest_file.exists():
+            raise FileNotFoundError(f"pristine_manifest.csv not found inside {pristine_src}")
+        with open(manifest_file, "r", encoding="utf-8") as mf:
+            rows = list(csv.DictReader(mf))
+        filtered = [r for r in rows if str(r.get("doc_id", "")) in allowed_docs]
+        for r in filtered:
+            doc_id = str(r.get("doc_id", ""))
+            assert doc_id not in forbidden_docs, f"LEAKAGE: calibration Half A doc {doc_id} appeared in Half B!"
+            img_path = base_dir / r["path"]
+            if not img_path.exists():
+                continue
+            img_bgr = cv2.imread(str(img_path))
+            if img_bgr is None:
+                continue
+            yield r, cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    else:
+        with zipfile.ZipFile(pristine_src, "r") as zf:
+            manifest_names = [n for n in zf.namelist() if n.endswith("pristine_manifest.csv")]
+            if not manifest_names:
+                raise FileNotFoundError(f"pristine_manifest.csv not found in {pristine_src}")
+            manifest_bytes = zf.read(manifest_names[0]).decode("utf-8")
+            rows = list(csv.DictReader(manifest_bytes.splitlines()))
+            filtered = [r for r in rows if str(r.get("doc_id", "")) in allowed_docs]
+            for r in filtered:
+                doc_id = str(r.get("doc_id", ""))
+                assert doc_id not in forbidden_docs, f"LEAKAGE: calibration Half A doc {doc_id} appeared in Half B!"
+                arc_name = f"pristine_heldout/{r['path']}"
+                if arc_name not in zf.namelist():
+                    continue
+                arr = np.frombuffer(zf.read(arc_name), dtype=np.uint8)
+                img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img_bgr is None:
+                    continue
+                yield r, cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+
 def evaluate_real_pristine_dev(
     model: torch.nn.Module,
-    pristine_zip: Path,
+    pristine_src: Path,
+    half_a_docs: Set[str],
+    half_b_docs: Set[str],
     config_path: Optional[Path],
     ckpt_eval: Dict[str, Any],
     budget: float,
     device: str,
 ) -> Dict[str, Any]:
-    """Evaluate false alarm rate on the 4,039 real pristine held-out dev panels."""
-    if not pristine_zip.exists():
-        raise FileNotFoundError(f"Pristine dev archive not found: {pristine_zip}")
-
+    """Evaluate false alarm rate strictly on Half B real pristine held-out dev panels."""
     val_s = float(ckpt_eval.get("best_image_threshold", 0.0))
     val_tau = float(ckpt_eval.get("best_threshold", 0.5))
     val_area = int(ckpt_eval.get("best_min_area", 50))
 
     total = 0
+    seen_docs: Set[str] = set()
     fa_cal = 0
     fa_val_only = 0
     by_class: Dict[str, Dict[str, int]] = {
@@ -98,66 +175,55 @@ def evaluate_real_pristine_dev(
     }
 
     t0 = time.time()
-    with zipfile.ZipFile(pristine_zip, "r") as zf:
-        manifest_names = [n for n in zf.namelist() if n.endswith("pristine_manifest.csv")]
-        if not manifest_names:
-            raise FileNotFoundError(f"pristine_manifest.csv not found in {pristine_zip}")
-        manifest_bytes = zf.read(manifest_names[0]).decode("utf-8")
-        rows = list(csv.DictReader(manifest_bytes.splitlines()))
+    for idx, (r, img_rgb) in enumerate(iter_pristine_rows_and_images(pristine_src, half_b_docs, half_a_docs)):
+        seen_docs.add(str(r.get("doc_id", "")))
+        cls_name = r.get("class", "Blot/Gel")
 
-        for idx, r in enumerate(rows):
-            arc_name = f"pristine_heldout/{r['path']}"
-            if arc_name not in zf.namelist():
-                continue
-            arr = np.frombuffer(zf.read(arc_name), dtype=np.uint8)
-            img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img_bgr is None:
-                continue
-            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-            cls_name = r.get("class", "Blot/Gel")
+        cal_s, cal_tau, cal_area = get_thresholds_for_class(cls_name, config_path, ckpt_eval, budget)
+        res_cal = predict_mask(
+            model=model,
+            image=img_rgb,
+            threshold=cal_tau,
+            min_area=cal_area,
+            image_threshold=cal_s,
+            device=device,
+        )
+        det_cal = bool(res_cal["is_detected"])
 
-            cal_s, cal_tau, cal_area = get_thresholds_for_class(cls_name, config_path, ckpt_eval, budget)
+        # Evaluate val-only operating point saved inside best.pt (never saw Half A or Half B)
+        prob_map = res_cal["prob_map"]
+        img_prob = res_cal["image_prob"]
+        img_ok_val = (val_s <= 0.0) or (img_prob is not None and float(img_prob) >= val_s)
+        det_val = False
+        if img_ok_val:
+            pred_bin_val = (prob_map >= val_tau).astype(np.uint8)
+            if val_area <= 0:
+                det_val = bool(np.sum(pred_bin_val) > 0)
+            else:
+                n_lbl, _, stats, _ = cv2.connectedComponentsWithStats(pred_bin_val, connectivity=8)
+                det_val = bool(n_lbl > 1 and np.any(stats[1:, cv2.CC_STAT_AREA] >= val_area))
 
-            # Single forward pass via calibrated threshold, plus check val-only threshold on prob_map
-            res_cal = predict_mask(
-                model=model,
-                image=img_rgb,
-                threshold=cal_tau,
-                min_area=cal_area,
-                image_threshold=cal_s,
-                device=device,
-            )
-            det_cal = bool(res_cal["is_detected"])
+        total += 1
+        if det_cal:
+            fa_cal += 1
+        if det_val:
+            fa_val_only += 1
+        if cls_name in by_class:
+            by_class[cls_name]["total"] += 1
+            by_class[cls_name]["fa_cal"] += int(det_cal)
+            by_class[cls_name]["fa_val"] += int(det_val)
 
-            # Check val-only operating point directly using the returned prob_map and image_prob
-            prob_map = res_cal["prob_map"]
-            img_prob = res_cal["image_prob"]
-            img_ok_val = (val_s <= 0.0) or (img_prob is not None and float(img_prob) >= val_s)
-            det_val = False
-            if img_ok_val:
-                pred_bin_val = (prob_map >= val_tau).astype(np.uint8)
-                if val_area <= 0:
-                    det_val = bool(np.sum(pred_bin_val) > 0)
-                else:
-                    n_lbl, _, stats, _ = cv2.connectedComponentsWithStats(pred_bin_val, connectivity=8)
-                    det_val = bool(n_lbl > 1 and np.any(stats[1:, cv2.CC_STAT_AREA] >= val_area))
+        if (idx + 1) % 500 == 0:
+            print(f"[Real Dev Half B] {idx + 1} panels ({time.time() - t0:.1f}s)")
 
-            total += 1
-            if det_cal:
-                fa_cal += 1
-            if det_val:
-                fa_val_only += 1
-            if cls_name in by_class:
-                by_class[cls_name]["total"] += 1
-                by_class[cls_name]["fa_cal"] += int(det_cal)
-                by_class[cls_name]["fa_val"] += int(det_val)
-
-            if (idx + 1) % 1000 == 0 or (idx + 1) == len(rows):
-                print(f"[Real Dev] {idx + 1}/{len(rows)} panels ({time.time() - t0:.1f}s)")
+    assert seen_docs.isdisjoint(half_a_docs), "FATAL: Half A docs contaminated Half B evaluation!"
+    print(f"[Real Dev Half B] Completed {total} panels across {len(seen_docs)} disjoint docs ({time.time() - t0:.1f}s)")
 
     far_cal, cal_lo, cal_hi = wilson_ci(fa_cal, total)
     far_val, val_lo, val_hi = wilson_ci(fa_val_only, total)
     return {
+        "eval_half": "B",
+        "eval_docs": len(seen_docs),
         "total": total,
         "fa_calibrated": fa_cal,
         "far_calibrated": far_cal,
@@ -168,6 +234,7 @@ def evaluate_real_pristine_dev(
         "val_only_thresholds": {"s": val_s, "tau": val_tau, "min_area": val_area},
         "by_class": by_class,
         "target1_met": bool(far_cal <= 0.02),
+        "target1_val_only_met": bool(far_val <= 0.02),
     }
 
 
@@ -261,7 +328,6 @@ def evaluate_synthetic_test(
     mcc_den = math.sqrt(float(tp_pix + fp_pix) * float(tp_pix + fn_pix) * float(tn_pix + fp_pix) * float(tn_pix + fn_pix))
     pix_mcc = ((tp_pix * tn_pix - fp_pix * fn_pix) / mcc_den) if mcc_den > 0 else 0.0
 
-    # Target 2: unrelated_paste FPR <= 1.5x pristine FPR AND <= 3.0% absolute
     t2_ratio_ok = (ratio <= 1.5)
     t2_abs_ok = (fpr_u <= 0.03)
     target2_met = bool(t2_ratio_ok and t2_abs_ok)
@@ -296,9 +362,13 @@ def main():
     ckpt_path = Path(args.checkpoint)
     cfg_path = Path(args.config) if args.config else None
     test_dir = Path(args.test_dir)
-    pristine_zip = Path(args.pristine_zip)
+    pristine_src = Path(args.pristine_zip)
+    split_path = Path(args.dev_split_json)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    half_a_docs, half_b_docs = load_and_verify_dev_split(split_path)
+    print(f"[VERIFIED] Dev split disjoint: Half A = {len(half_a_docs)} docs, Half B = {len(half_b_docs)} docs.")
 
     class_map: Dict[str, str] = {}
     cm_path = Path(args.class_map) if args.class_map else None
@@ -317,7 +387,9 @@ def main():
 
     dev_res = evaluate_real_pristine_dev(
         model=model,
-        pristine_zip=pristine_zip,
+        pristine_src=pristine_src,
+        half_a_docs=half_a_docs,
+        half_b_docs=half_b_docs,
         config_path=cfg_path,
         ckpt_eval=ckpt_eval,
         budget=args.budget,
@@ -334,16 +406,18 @@ def main():
     )
 
     df_test.to_csv(out_dir / "phase5_synthetic_v3_test.csv", index=False)
-    report = {"real_pristine_dev": dev_res, "synthetic_v3_test": test_res}
+    report = {"real_pristine_dev_half_b": dev_res, "synthetic_v3_test": test_res}
     with open(out_dir / "phase5_eval_summary.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
-    print("\n--- TARGET 1: Real Held-Out Pristine Dev Set (177 Docs) ---")
-    print(f"Calibrated FAR : {dev_res['fa_calibrated']}/{dev_res['total']} = {dev_res['far_calibrated']*100:.2f}% "
-          f"[{dev_res['far_calibrated_ci'][0]*100:.2f}%, {dev_res['far_calibrated_ci'][1]*100:.2f}%] (Target <= 2.0%)")
-    print(f"Val-only FAR   : {dev_res['fa_val_only']}/{dev_res['total']} = {dev_res['far_val_only']*100:.2f}% "
-          f"[{dev_res['far_val_only_ci'][0]*100:.2f}%, {dev_res['far_val_only_ci'][1]*100:.2f}%]")
-    print(f"Target 1 Met   : {dev_res['target1_met']}")
+    print("\n--- TARGET 1: Real Held-Out Pristine Dev Half B (89 Docs, Strictly Unseen by Threshold Calibration) ---")
+    print(f"Calibrated FAR (Half A cal -> Half B eval) : {dev_res['fa_calibrated']}/{dev_res['total']} = "
+          f"{dev_res['far_calibrated']*100:.2f}% [{dev_res['far_calibrated_ci'][0]*100:.2f}%, {dev_res['far_calibrated_ci'][1]*100:.2f}%] (Target <= 2.0%)")
+    print(f"Val-only FAR (best.pt -> Half B eval)      : {dev_res['fa_val_only']}/{dev_res['total']} = "
+          f"{dev_res['far_val_only']*100:.2f}% [{dev_res['far_val_only_ci'][0]*100:.2f}%, {dev_res['far_val_only_ci'][1]*100:.2f}%] "
+          f"(s={dev_res['val_only_thresholds']['s']:.2f}, tau={dev_res['val_only_thresholds']['tau']:.2f}, area={dev_res['val_only_thresholds']['min_area']})")
+    print(f"Target 1 Met (Half B Calibrated)           : {dev_res['target1_met']}")
+    print(f"Target 1 Met (Half B Val-Only)             : {dev_res['target1_val_only_met']}")
 
     print("\n--- TARGET 2 & 3: Synthetic v3 Test Set ---")
     print(f"Pristine FPR        : {test_res['hits_pristine']}/{test_res['n_pristine']} = {test_res['fpr_pristine']*100:.2f}% "
