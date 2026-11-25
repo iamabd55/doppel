@@ -158,7 +158,7 @@ def main():
                 f"| **{det_name}** | {cls_name} | {m['n_forged']} | "
                 f"{m['overlap_hits']}/{m['n_forged']} ({m['overlap_recall']*100:.1f}%) {ov_ci_str} | "
                 f"{m['any_hits']}/{m['n_forged']} ({m['any_recall']*100:.1f}%) {any_ci_str} | "
-                f"{m['n_clean']} | {m['clean_fa']}/{m['n_clean']} ({m['far']*100:.2f}%) {far_ci_str} | "
+                f"{m['n_clean']} | {m['clean_fa']} | {m['far']*100:.2f}% {far_ci_str} | "
                 f"{m['micro_f1']:.4f} | {m['micro_iou']:.4f} | {m['macro_f1']:.4f} | {m['macro_iou']:.4f} |"
             )
 
