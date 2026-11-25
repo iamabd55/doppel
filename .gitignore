@@ -1,5 +1,6 @@
 .venv/
 data/
+doa-gan_weights/
 results/
 __pycache__/
 .ipynb_checkpoints/
