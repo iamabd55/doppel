@@ -4,6 +4,9 @@ doa-gan_weights/
 results/
 __pycache__/
 .ipynb_checkpoints/
-COMMIT
 checkpoints/
 COMMIT
+*.pt
+*.pth
+*.h5
+*.hd5
