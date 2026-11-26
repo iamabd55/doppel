@@ -21,7 +21,7 @@ Usage:
   .venv/bin/python scripts/natural_aggregate.py --detector dct
   .venv/bin/python scripts/natural_aggregate.py --detector sift
   .venv/bin/python scripts/natural_aggregate.py --detector dct --calibrate
-  .venv/bin/python scripts/natural_aggregate.py --detector dct --final   # test unlocked
+  .venv/bin/python -u scripts/natural_aggregate.py --final  # full held-out evaluation
   .venv/bin/python scripts/natural_aggregate.py --all   # both detectors, calibration + baselines doc
 """
 
@@ -681,6 +681,16 @@ def main():
     parser.add_argument("--cache-root", type=Path, default=CACHE_ROOT)
     parser.add_argument("--doc-out", type=Path, default=DOC_OUT)
     args = parser.parse_args()
+
+    if args.final:
+        if args.calibrate or args.apply_calibrated:
+            parser.error("The final pass uses the locked thresholds")
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from natural_final import run_final
+
+        run_final()
+        return
 
     if not args.detector and not args.all:
         parser.error("Specify --detector dct|sift or --all.")

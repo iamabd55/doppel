@@ -105,38 +105,42 @@ def frozen_detection(row, detector):
         return Detection(bool(cached["decision"]), data["mask"] > 0)
 
 
-def evaluate_one(row, *, config, thresholds):
+def classical_detections(row, config):
     if config is None:
-        dct = frozen_detection(row, "dct")
-        sift = frozen_detection(row, "sift")
-    else:
-        image = cv2.imread(str(ROOT / row["image_path"]), cv2.IMREAD_COLOR)
-        if image is None:
-            raise OSError(f"Could not read {row['image_path']}")
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        dct, sift = (from_mask(mask) for mask in classical_masks(gray, *config))
+        return frozen_detection(row, "dct"), frozen_detection(row, "sift")
+    image = cv2.imread(str(ROOT / row["image_path"]), cv2.IMREAD_COLOR)
+    if image is None:
+        raise OSError(f"Could not read {row['image_path']}")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    dct, sift = (from_mask(mask) for mask in classical_masks(gray, *config))
+    return dct, sift
 
-    score, mask = doagan_cache(row)
+
+def doagan_detections(score, mask, thresholds):
     empty = np.zeros_like(mask)
-    doagan = {
+    return {
         budget: Detection(score >= threshold, mask if score >= threshold else empty)
         for budget, threshold in thresholds.items()
     }
-    detections = (
-        {"DCT": dct, "SIFT": sift}
-        | {f"DOA-GAN ({budget} budget)": result for budget, result in doagan.items()}
-        | fuse(dct, sift, doagan["2%"])
-    )
-    if row["label"] == "authentic":
-        return False, {name: (int(det.flagged), 0, 0.0, 0.0) for name, det in detections.items()}
 
+
+def ground_truth(row, shape):
+    if row["label"] == "authentic":
+        return None
     gt = cv2.imread(str(ROOT / row["mask_path"]), cv2.IMREAD_GRAYSCALE)
-    if gt is None or gt.shape != mask.shape:
+    if gt is None or gt.shape != shape:
         raise ValueError(f"Missing or misaligned ground truth for {row['image_path']}")
     gt = gt > 0
-    gt_count = np.count_nonzero(gt)
-    if not gt_count:
+    if not gt.any():
         raise ValueError(f"Empty forged ground truth for {row['image_path']}")
+    return gt
+
+
+def score_detections(detections, gt):
+    if gt is None:
+        return {name: (int(det.flagged), 0, 0.0, 0.0) for name, det in detections.items()}
+
+    gt_count = np.count_nonzero(gt)
     metrics = {}
     for name, det in detections.items():
         tp = np.count_nonzero(gt & det.mask)
@@ -145,7 +149,20 @@ def evaluate_one(row, *, config, thresholds):
             int(det.flagged), int(tp > 0), 2 * tp / (gt_count + predicted),
             tp / (gt_count + predicted - tp),
         )
-    return True, metrics
+    return metrics
+
+
+def evaluate_one(row, *, config, thresholds):
+    dct, sift = classical_detections(row, config)
+    score, mask = doagan_cache(row)
+    doagan = doagan_detections(score, mask, thresholds)
+    detections = (
+        {"DCT": dct, "SIFT": sift}
+        | {f"DOA-GAN ({budget} budget)": result for budget, result in doagan.items()}
+        | fuse(dct, sift, doagan["2%"])
+    )
+    gt = ground_truth(row, mask.shape)
+    return gt is not None, score_detections(detections, gt)
 
 
 def evaluate(split, calibrated, workers):
