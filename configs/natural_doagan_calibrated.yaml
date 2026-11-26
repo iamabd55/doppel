@@ -1,0 +1,22 @@
+checkpoint: doa-gan_weights/single_channel.pkl
+calibration_split: casia2/calibration
+image_score: fraction above 0.5 at model resolution
+budgets:
+  1%:
+    threshold: 0.08994140625
+    tp: 121
+    fp: 22
+    recall: 0.12551867219917012
+    far: 0.009790832220738763
+  2%:
+    threshold: 0.065703125
+    tp: 171
+    fp: 44
+    recall: 0.17738589211618258
+    far: 0.019581664441477527
+  5%:
+    threshold: 0.037373046875
+    tp: 251
+    fp: 110
+    recall: 0.2603734439834025
+    far: 0.04895416110369381

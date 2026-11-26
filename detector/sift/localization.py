@@ -77,6 +77,8 @@ def detect_sift(
     orientation_tolerance: float = 20.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[np.ndarray]]:
     """Complete SIFT copy-move detection pipeline returning a binary mask."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     flip_min_inliers = min_inliers if min_inliers_flip is None else min_inliers_flip
 

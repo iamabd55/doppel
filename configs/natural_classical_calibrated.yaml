@@ -1,0 +1,12 @@
+description: Calibrated knobs for DCT and SIFT classical detectors. Selected on CASIA2
+  calibration split, seed=0, FAR budget 2%. Frozen after generation. See natural_protocol.md
+  Section 2.
+dct:
+  min_votes: 25
+  min_size: 100
+  calibration_recall: 0.305
+  calibration_far: 0.0018
+sift:
+  min_inliers: 15
+  calibration_recall: 0.416
+  calibration_far: 0.0182
