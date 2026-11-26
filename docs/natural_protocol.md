@@ -299,3 +299,26 @@ Montages are saved to `results/natural/montage_{detector}_successes.png` and `re
 ## Addenda
 
 *(Append dated addenda here if any post-hoc correction is required. Do not edit the text above.)*
+
+## Addendum (2026-11-26) | DOA-GAN removed from fusion
+
+DOA-GAN is dropped from fusion because its outputs did not adequately discriminate forged from authentic images on the CASIA2 calibration smoke set. The corrected three-channel scores favored authentic images on average. The single-channel scores showed partial ranking signal with substantial class overlap and did not establish performance at the primary 2% false-alarm budget. See [DOA-GAN calibration smoke test](natural_doagan_failure.md).
+
+Only fusion rules (a) F1, DCT OR SIFT (mask union), and (b) F2, DCT AND SIFT (mask intersection), remain. Each rule runs with both frozen and calibrated classical variants. This addendum was recorded before any test-split evaluation.
+
+## Addendum (2026-11-26) | Single-channel DOA-GAN restored for three-detector fusion
+
+The project will evaluate three-detector fusion using the pretrained single-channel checkpoint. This supersedes the removal decision above and retains the smoke-test findings as evidence. DOA-GAN uses the authors' folder preprocessing and sigmoid localization output. Its image score is the fraction of 320×320 pixels with foreground probability greater than 0.5. Its binary mask uses the same pixel threshold after linearly resizing probabilities to the image size. The detection logit is excluded.
+
+Use only CASIA2 calibration images to select score thresholds for the existing 1%, 2%, and 5% FAR budgets. Choose the threshold with highest recall, then lowest FAR, then highest threshold. A threshold above 1 is available to return zero positives when needed. Use the 2% threshold for fusion. Rules F1 through F5 are restored so both classical-only and three-detector rules can be compared. DOA-GAN contributes its mask only when its image decision is positive. The F4 mask is the union of masks from the positive voters. Report CASIA2 localization against its target-only ground truth as specified above. Record thresholds and the comparison before opening the reserved test pass.
+
+Run the following from the repository root. The calibrated evaluation uses the settings written by `natural_aggregate.py`.
+
+```bash
+.venv/bin/python -u scripts/natural_run_doagan.py --split calibration
+.venv/bin/python -u scripts/natural_run_fusion.py calibrate
+.venv/bin/python -u scripts/natural_run_fusion.py evaluate
+.venv/bin/python -u scripts/natural_run_fusion.py evaluate --calibrated
+```
+
+For one RGB image, `natural_run_fusion.py predict IMAGE --masks-out OUTPUT.npz` prints the detector and fusion decisions and saves the image-size masks for inspection.
