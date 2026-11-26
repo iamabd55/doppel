@@ -344,3 +344,9 @@ Calibrated DCT uses `min_votes=25` and `min_size=100`. Calibrated SIFT uses `min
 | `doa-gan_weights/single_channel.pkl` | `ffa14ea9a47c9779d9a013a150521247b3006ed5dddee900d18b4bc420f0edb5` |
 
 Hashes of the frozen parameter sets use compact UTF-8 JSON with keys sorted. File hashes use raw bytes. The upstream model source is `asrafulashiq/doagan_clean` at `081cc88aa1b67c250290311e78a7c4f101fc28d7`.
+
+## Addendum (2026-11-26) | Fixed CoMoFoD dev subset for DOA-GAN
+
+The full CoMoFoD development run takes about an hour on CPU. Evaluate DOA-GAN on a fixed random subset of 800 CoMoFoD dev images. Sort the ten strata by attack category and then by manifest label. Within each stratum, sort by image path and draw 80 images without replacement using one Python `random.Random(0)` generator across the strata. The resulting subset has 400 forged and 400 original (authentic) images. The locked list is `configs/natural_comofod_doagan_subset.csv`, with SHA-256 `8ea0e168262a1920d3a6e49f51ee680c1313e0746703b71ea51ed4d544aeabad`. Reuse completed predictions for selected images and leave other existing cache entries unused.
+
+Report DCT, SIFT, and classical-only fusion rules F1 and F2 on all 6,400 CoMoFoD dev images. Report standalone DOA-GAN and rules F3, F4, and F5 on the locked 800-image subset. Also report DCT, SIFT, F1, and F2 on those same 800 images for a paired comparison. Show the full and subset denominators separately, including in attack and size breakdowns. CoMoFoD dev remains optimistic for DCT and SIFT. CASIA2 still uses every held-out image and all five fusion rules. The detector settings, thresholds, and rules locked above apply throughout.
