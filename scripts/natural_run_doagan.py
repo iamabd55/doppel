@@ -1,6 +1,7 @@
 """Cache single-channel DOA-GAN area scores and native masks on calibration or dev."""
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -22,6 +23,14 @@ MANIFESTS = ROOT / "data" / "natural" / "manifests"
 CACHE_ROOT = ROOT / "results" / "natural" / "cache"
 CACHE_VERSION = "doagan_single_area_v1"
 SPLITS = {"calibration": "casia2", "dev": "comofod", "test": "casia2"}
+COMOFOD_SUBSET = ROOT / "configs" / "natural_comofod_doagan_subset.csv"
+COMOFOD_SUBSET_SHA256 = "8ea0e168262a1920d3a6e49f51ee680c1313e0746703b71ea51ed4d544aeabad"
+
+
+def load_comofod_subset():
+    if hashlib.sha256(COMOFOD_SUBSET.read_bytes()).hexdigest() != COMOFOD_SUBSET_SHA256:
+        raise ValueError("The locked CoMoFoD DOA-GAN subset changed")
+    return pd.read_csv(COMOFOD_SUBSET)
 
 
 def result_path(dataset, split, image_path):
@@ -57,7 +66,7 @@ def main():
     torch.set_num_threads(args.threads)
     cv2.setNumThreads(1)
     dataset = SPLITS[args.split]
-    manifest = pd.read_csv(MANIFESTS / f"{dataset}.csv")
+    manifest = load_comofod_subset() if args.split == "dev" else pd.read_csv(MANIFESTS / f"{dataset}.csv")
     rows = list(manifest[manifest["split"].eq(args.split)].itertuples(index=False))
     if not rows:
         raise ValueError(f"No {dataset}/{args.split} images")
