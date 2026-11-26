@@ -322,3 +322,25 @@ Run the following from the repository root. The calibrated evaluation uses the s
 ```
 
 For one RGB image, `natural_run_fusion.py predict IMAGE --masks-out OUTPUT.npz` prints the detector and fusion decisions and saves the image-size masks for inspection.
+
+## Addendum (2026-11-26) | Exact settings locked before the held-out pass
+
+The active checkpoint is `doa-gan_weights/single_channel.pkl` with one sigmoid localization channel. The authors' RGB preprocessing resizes to 320×320 with linear interpolation before float conversion and ImageNet normalization. The detection logit is discarded. The image score is the fraction of pixels in the 320×320 probability map strictly above 0.5. An image is positive at or above the applicable score cutoff. The native-resolution mask uses linear resizing of the probability map followed by a strict 0.5 threshold and is gated by the image decision. No minimum native pixel-area filter is applied. The single-channel output is evaluated as a combined localization map.
+
+| CASIA2 calibration FAR budget | Exact DOA-GAN score cutoff |
+|---|---:|
+| 1% | 0.08994140625 |
+| 2% (all fusion rows) | 0.065703125 |
+| 5% | 0.037373046875 |
+
+Calibrated DCT uses `min_votes=25` and `min_size=100`. Calibrated SIFT uses `min_inliers=15`. Both retain their other frozen parameters. All five fusion rules run unchanged with both classical variants. For montage sampling, use seed 0 within each detector and outcome on the held-out split. DOA-GAN montages use the 2% operating point. Montages are local artifacts under `results/natural/`.
+
+| Locked artifact or parameter set | SHA-256 |
+|---|---|
+| Frozen DCT defaults | `eadb5a4b30db7d9b30dec8f695c809e79fbf20fed91f193325ebec26276de0d6` |
+| Frozen SIFT defaults | `9b55dcdc1228237a6fa44c888ec7d48d5f4af393b3411705d847bdadb4973c29` |
+| `configs/natural_classical_calibrated.yaml` | `e338ee56b65037e349b41f3a00935806653ce533651bf5b78e883ab7a3f7c51e` |
+| `configs/natural_doagan_calibrated.yaml` | `563b25ef232d4ee5dd5c7d5a5774a57f894671af337bd5658792a0a2047b5e99` |
+| `doa-gan_weights/single_channel.pkl` | `ffa14ea9a47c9779d9a013a150521247b3006ed5dddee900d18b4bc420f0edb5` |
+
+Hashes of the frozen parameter sets use compact UTF-8 JSON with keys sorted. File hashes use raw bytes. The upstream model source is `asrafulashiq/doagan_clean` at `081cc88aa1b67c250290311e78a7c4f101fc28d7`.
