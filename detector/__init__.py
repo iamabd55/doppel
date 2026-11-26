@@ -1,6 +1,5 @@
 """Doppel copy-move forgery detection package."""
 
-from detector.detect import detect
-from detector.fusion import fuse, FusionResult
+from detector.dct import detect
 
-__all__ = ["detect", "fuse", "FusionResult"]
+__all__ = ["detect"]

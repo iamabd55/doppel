@@ -3,7 +3,6 @@ name = "forgery-detection"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "flask>=3.1.1",
     "matplotlib>=3.11.2",
     "numpy>=2.4.6",
     "opencv-python>=5.0.0.93",
@@ -15,8 +14,14 @@ dependencies = [
 ]
 
 [dependency-groups]
+api = [
+    "fastapi>=0.165.0",
+    "pillow>=13.0.0",
+    "python-multipart>=0.0.34",
+    "uvicorn>=0.54.0",
+]
 dev = [
-    "jupyter>=1.1.1",
+    "httpx>=0.28.1",
     "pytest>=8.0.0",
 ]
 

@@ -103,7 +103,7 @@ def process_one(args_tuple):
     if detector == "dct":
         # Import here so the worker subprocess can find the module.
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-        from detector.detect import detect
+        from detector.dct import detect
         mask = detect(gray, **FROZEN_DCT)
         # DCT has no continuous score; use the fraction of foreground pixels
         # as a proxy score (0 = no forgery signal, 1 = fully flagged).

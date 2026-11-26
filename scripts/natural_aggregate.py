@@ -393,7 +393,7 @@ def _eval_dct_single_worker(args_tuple):
     label, image_path, min_votes, min_size = args_tuple
     sys.path.insert(0, str(REPO_ROOT))
     import cv2 as _cv2
-    from detector.detect import detect
+    from detector.dct import detect
 
     img = _cv2.imread(str(REPO_ROOT / image_path))
     if img is None:
@@ -411,8 +411,8 @@ def _extract_dct_matches_worker(args_tuple):
     idx, label, image_path = args_tuple
     sys.path.insert(0, str(REPO_ROOT))
     import cv2 as _cv2
-    from detector.features import extract_features
-    from detector.matching import find_matches
+    from detector.dct.features import extract_features
+    from detector.dct.matching import find_matches
 
     img = _cv2.imread(image_path)
     if img is None:
@@ -424,7 +424,7 @@ def _extract_dct_matches_worker(args_tuple):
 
 
 def _eval_dct_stage34(cached_matches, min_votes: int, min_size: int) -> bool:
-    """Run stages 3-4 of detector/detect.py on precomputed matches."""
+    """Run stages 3-4 of detector/dct/detect.py on precomputed matches."""
     import cv2 as _cv2
     from skimage.morphology import remove_small_objects
 

@@ -65,7 +65,7 @@ Generated from read-only inspection of the repository, datasets, and weights. No
 
 ## 4. Frozen DCT and SIFT Configs
 
-* **DCT (`detector/detect.py`, `configs/dct_adapted.yaml`, `scripts/benchmark.py`):**
+* **DCT (`detector/dct/detect.py`, `configs/dct_adapted.yaml`):**
   * **CoMoFoD baseline (`dct-baseline` tag):** `detect(gray, B=8, K=16, Q=4, min_std=4.0, window=5, min_dist=30, min_votes=50, kernel=9, min_size=500)` in `detector/detect.py`.
   * **Frozen scientific baseline / adapted (`configs/dct_adapted.yaml`):** tuned on scientific synthetic val (`Q=8, K=6, min_votes=150, min_size=500` frozen; `min_votes=75, min_size=64` adapted).
   * **How to run on one image:** `mask = detect(gray_uint8, ...)` where `gray_uint8` is 2D grayscale `uint8`.

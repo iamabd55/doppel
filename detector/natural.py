@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import yaml
 
-from detector.detect import detect
+from detector.dct import detect
 from detector.sift.localization import detect_sift
 
 ROOT = Path(__file__).resolve().parents[1]

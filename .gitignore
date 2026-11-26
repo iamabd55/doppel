@@ -10,3 +10,6 @@ COMMIT
 *.pth
 *.h5
 *.hd5
+
+# Pinned upstream DOA-GAN checkout provisioned locally
+/doagan_clean/

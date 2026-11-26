@@ -4,7 +4,7 @@ Project: Doppel, a hybrid copy-move forgery detection and localization system fo
 
 History: the project started on scientific images (BioFors). That work is kept on tag scientific-phase5 and becomes a short domain-shift appendix. Key finding there: a CNN trained on synthetic scientific forgeries learned paste seams, not duplication (it fired on unrelated pastes 2.86x more than on pristine panels, 6.67% vs 2.33%).
 
-Assets: DCT code and frozen config, SIFT code and frozen config (tuned on CoMoFoD), CoMoFoD in data/comofod, pretrained DOA-GAN weights already in the repo (path in docs/natural_inventory.md), an old Flask dashboard, data/natural/casia2, data/natural/casia2_masks, data/natural/coverage.
+Assets: DCT code and frozen config, SIFT code and frozen config (tuned on CoMoFoD), CoMoFoD in data/comofod, pretrained DOA-GAN weights already in the repo (path in docs/natural_inventory.md), the FastAPI backend, data/natural/casia2, data/natural/casia2_masks, data/natural/coverage.
 
 Datasets: the authors' CASIA-CMFD and USC-ISI files are no longer available. We build our own CASIA v2.0 copy-move subset (Tp copy-move images with ground-truth masks, Au authentic images as negatives). CoMoFoD is the DEVELOPMENT benchmark because DCT and SIFT were tuned on it. COVERAGE is an optional small extra test. DOA-GAN was trained on USC-ISI, so it is cross-dataset on all of these.
 
